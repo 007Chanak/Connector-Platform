@@ -142,7 +142,7 @@ function Integrations() {
         localStorage.getItem("token");
 
     await api.get(
-        "/xero/invoices",
+        "sync/xero/invoices",
         {
             headers: {
                 Authorization: `Bearer ${localStorage.getItem("token")}`

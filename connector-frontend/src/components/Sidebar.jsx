@@ -68,6 +68,10 @@ function Sidebar() {
             Migration Center
           </Link>
 
+          <Link to="/workflow-designer">
+            Workflow Designer
+          </Link>
+
         </nav>
 
       </div>

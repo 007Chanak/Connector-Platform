@@ -18,6 +18,7 @@ import SalesOrders from "./pages/SalesOrders";
 import Accounts from "./pages/Accounts";
 import Integrations from "./pages/Integrations";
 import MigrationCenter from "./pages/MigrationCenter";
+import WorkflowDesigner from "./pages/WorkflowDesigner";
 import Login from "./pages/Login";
 import Signup from "./pages/Signup";
 
@@ -199,6 +200,15 @@ function App() {
           element={
             <ProtectedLayout>
               <MigrationCenter />
+            </ProtectedLayout>
+          }
+        />
+
+        <Route
+          path="/workflow-designer"
+          element={
+            <ProtectedLayout>
+              <WorkflowDesigner />
             </ProtectedLayout>
           }
         />

@@ -66,7 +66,7 @@ function Items() {
               </th>
 
               <th className="text-left p-4">
-                Price
+                Sale Price
               </th>
 
               <th className="text-left p-4">
@@ -96,7 +96,7 @@ function Items() {
                   </td>
 
                   <td className="p-4">
-                    ₹{item.unit_price}
+                    ₹{item.sales_price}
                   </td>
 
                   <td className="p-4">
