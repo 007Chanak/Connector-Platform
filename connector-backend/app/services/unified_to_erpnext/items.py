@@ -1,6 +1,6 @@
 import requests
 from sqlalchemy import text
-
+from decimal import Decimal
 from app.database import SessionLocal
 
 from app.services.mapping_service import (
@@ -119,6 +119,7 @@ def push_items_to_erpnext(
                     {}
                 )
             )
+            payload["gst_hsn_code"] = "999799"
 
             if (
                 "item_group"
@@ -150,6 +151,12 @@ def push_items_to_erpnext(
             print(
                 payload
             )
+
+            for key, value in payload.items():
+
+                if isinstance(value, Decimal):
+
+                    payload[key] = float(value)
 
             response = requests.post(
 

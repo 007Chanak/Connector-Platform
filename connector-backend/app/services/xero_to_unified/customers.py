@@ -1,11 +1,19 @@
 import requests
+import json
 from sqlalchemy import text
 from app.database import SessionLocal
+from datetime import datetime
 from app.transformations.customer_transform import (
     transform_xero_contact
 )
 from app.services.xero_auth_service import (
     refresh_xero_token
+)
+from app.services.xero_to_unified.transformer import (
+    transform_customer_using_mapping
+)
+from app.services.mapping_service import (
+    get_mapping_dict
 )
 from fastapi import Depends
 from app.dependencies.auth import get_current_user
@@ -87,7 +95,29 @@ def sync_xero_customers_service(user_id,tenant_id):
 
         for contact in contacts:
 
-            customer = transform_xero_contact(contact)
+            print("CONTACT PERSONS:")
+            print(contact.get("ContactPersons"))
+
+            
+            print(
+                json.dumps(
+                    contact,
+                    indent=4
+                )
+            )            
+
+            mapping = get_mapping_dict(
+                tenant_id=tenant_id,
+                entity_type="customers",
+                source_system="xero"
+            )
+
+            customer = (
+                transform_customer_using_mapping(
+                    contact,
+                    mapping
+                )
+            )
 
             print(
                 "INSERTING:",
@@ -127,7 +157,10 @@ def sync_xero_customers_service(user_id,tenant_id):
                             postal_code = :postal_code,
                             tax_number = :tax_number,
                             website = :website,
-                            status = :status
+                            status = :status,
+                            city = :city,
+                            state = :state,
+                            country = :country
                         WHERE id = :id
                     """),
                     {
@@ -140,7 +173,10 @@ def sync_xero_customers_service(user_id,tenant_id):
                         "postal_code": customer.get("postal_code"),
                         "tax_number": customer.get("tax_number"),
                         "website": customer.get("website"),
-                        "status": customer.get("status")
+                        "status": customer.get("status"),
+                        "city": customer.get("city"),
+                        "state": customer.get("state"),
+                        "country": customer.get("country"),
                     }
                 )
 
@@ -162,6 +198,9 @@ def sync_xero_customers_service(user_id,tenant_id):
                         tax_number,
                         website,
                         status,
+                        city,
+                        state,
+                        country,
                         created_at
                     )
                     VALUES (
@@ -178,6 +217,9 @@ def sync_xero_customers_service(user_id,tenant_id):
                         :tax_number,
                         :website,
                         :status,
+                        :city,
+                        :state,
+                        :country,
                         :created_at
                     )
                 """),
@@ -186,7 +228,7 @@ def sync_xero_customers_service(user_id,tenant_id):
                     
                     "tenant_id": tenant_id,
 
-                    "source": customer.get("source"),
+                    "source": "xero",
 
                     "external_id": customer.get("external_id"),
 
@@ -208,7 +250,13 @@ def sync_xero_customers_service(user_id,tenant_id):
 
                     "status": customer.get("status"),
 
-                    "created_at": customer.get("created_at")
+                    "city": customer.get("city"),
+
+                    "state": customer.get("state"),
+
+                    "country": customer.get("country"),
+
+                    "created_at": datetime.utcnow()
                 }
             )
 

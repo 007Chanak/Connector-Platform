@@ -1,65 +1,11 @@
 import requests
-
 from sqlalchemy import text
-
 from app.database import SessionLocal
 
 from app.services.mapping_service import (
     build_payload_from_mapping,
     get_target_mappings
 )
-
-def fetch_erpnext_customers(user_id,tenant_id):
-
-    db = SessionLocal()
-    try:
-
-        tenant_id = db.execute(
-            text("""
-                SELECT tenant_id
-                FROM users
-                WHERE id = :user_id
-            """),
-            {
-                "user_id": user_id
-            }
-        ).scalar()
-
-        erp = db.execute(
-            text("""
-                SELECT *
-                FROM erpnext_integrations
-                WHERE tenant_id = :tenant_id
-                ORDER BY id DESC
-                LIMIT 1
-            """),
-            {
-                "tenant_id": tenant_id,
-            }
-        ).fetchone()
-
-        if not erp:
-            return {
-                "error": "No ERPNext integration found"
-            }
-
-        url = f"{erp.erp_url}/api/resource/Customer"
-
-        headers = {
-            "Authorization": (
-                f"token {erp.api_key}:{erp.api_secret}"
-            )
-        }
-
-        response = requests.get(
-            url,
-            headers=headers
-        )
-
-        return response.json()
-    finally:
-        db.close()
-
 
 def fetch_complete_erpnext_customers(user_id,tenant_id):
 
@@ -284,7 +230,7 @@ def fetch_complete_erpnext_customers(user_id,tenant_id):
     finally:
         db.close()
 
-def fetch_erpnext_sales_invoices(user_id,tenant_id):
+def fetch_complete_erpnext_suppliers(user_id,tenant_id):
 
     db = SessionLocal()
     try:
@@ -299,7 +245,236 @@ def fetch_erpnext_sales_invoices(user_id,tenant_id):
                 "user_id": user_id
             }
         ).scalar()
-        
+
+        erp = db.execute(
+            text("""
+                SELECT *
+                FROM erpnext_integrations
+                WHERE tenant_id = :tenant_id
+                ORDER BY id DESC
+                LIMIT 1
+            """),
+            {
+                "tenant_id": tenant_id,
+            }
+        ).fetchone()
+
+        if not erp:
+            return []
+
+        headers = {
+            "Authorization":
+                f"token {erp.api_key}:{erp.api_secret}"
+        }
+
+        suppliers_response = requests.get(
+            f"{erp.erp_url}/api/resource/Supplier",
+            headers=headers
+        )
+
+        suppliers = suppliers_response.json().get(
+            "data",
+            []
+        )
+
+        unified_suppliers = []
+
+        for supplier in suppliers:
+
+            supplier_name = supplier.get("name")
+            contact_person = ""
+
+            email = ""
+            phone = ""
+            address = ""
+            postal_code = ""
+
+            # CONTACT LOOKUP
+            contacts_response = requests.get(
+                f"{erp.erp_url}/api/resource/Contact",
+                headers=headers
+            )
+
+            contacts = contacts_response.json().get(
+                "data",
+                []
+            )
+
+            for contact in contacts:
+
+                contact_name = contact.get("name")
+
+                print(
+                    "Checking",
+                    supplier_name,
+                    "against contact",
+                    contact_name
+                )
+
+                contact_doc = requests.get(
+                    f"{erp.erp_url}/api/resource/Contact/{contact_name}",
+                    headers=headers
+                ).json()["data"]
+
+                for link in contact_doc.get(
+                    "links",
+                    []
+                ):
+
+                    if (
+                        link.get("link_doctype")
+                        == "Supplier"
+                        and
+                        link.get("link_name")
+                        == supplier_name
+                    ):
+                        print(contact_doc)
+
+                        contact_person = contact_doc.get(
+                            "full_name",
+                            ""
+                        )
+
+                        email = contact_doc.get(
+                            "email_id",
+                            ""
+                        )
+
+                        phone = (
+                            contact_doc.get(
+                                "mobile_no"
+                            )
+                            or
+                            contact_doc.get(
+                                "phone"
+                            )
+                            or
+                            ""
+                        )
+
+                        print(
+                            "MATCHED:",
+                            supplier_name,
+                            "Email:",
+                            email,
+                            "Phone:",
+                            phone
+                        )
+
+                        break
+
+                if contact_person:
+                    break
+
+            # ADDRESS LOOKUP
+            addresses_response = requests.get(
+                f"{erp.erp_url}/api/resource/Address",
+                headers=headers
+            )
+
+            addresses = addresses_response.json().get(
+                "data",
+                []
+            )
+
+            for addr in addresses:
+
+                addr_name = addr.get("name")
+
+                addr_doc = requests.get(
+                    f"{erp.erp_url}/api/resource/Address/{addr_name}",
+                    headers=headers
+                ).json()["data"]
+
+                for link in addr_doc.get(
+                    "links",
+                    []
+                ):
+
+                    if (
+                        link.get("link_doctype")
+                        == "Supplier"
+                        and
+                        link.get("link_name")
+                        == supplier_name
+                    ):
+
+                        address = ", ".join(
+                            filter(
+                                None,
+                                [
+                                    addr_doc.get(
+                                        "address_line1"
+                                    ),
+                                    addr_doc.get(
+                                        "city"
+                                    ),
+                                    addr_doc.get(
+                                        "state"
+                                    ),
+                                    addr_doc.get(
+                                        "country"
+                                    )
+                                ]
+                            )
+                        )
+
+                        postal_code = (
+                            addr_doc.get("pincode")
+                            or ""
+                        )
+
+                        print(
+                            "POSTAL:",
+                            supplier_name,
+                            postal_code
+                        )
+
+                        break
+
+                if address:
+                    break
+
+            supplier_data = {
+                "supplier_name": supplier_name,
+                "contact_name": contact_person,
+                "email": email,
+                "phone": phone,
+                "address": address,
+                "postal_code": postal_code
+            }
+
+            print("CONTACT PERSON:", contact_person)
+
+            print(
+                "APPENDING:",
+                supplier_data
+            )
+
+            unified_suppliers.append(
+                supplier_data
+            )
+
+        return unified_suppliers
+    finally:
+        db.close()
+
+def fetch_erpnext_complete_items(user_id,tenant_id):
+
+    db = SessionLocal()
+    try:
+
+        tenant_id = db.execute(
+            text("""
+                SELECT tenant_id
+                FROM users
+                WHERE id = :user_id
+            """),
+            {
+                "user_id": user_id
+            }
+        ).scalar()
+
         erp = db.execute(
             text("""
                 SELECT *
@@ -322,136 +497,77 @@ def fetch_erpnext_sales_invoices(user_id,tenant_id):
             )
         }
 
-        invoices_url = (
-            f"{erp.erp_url}/api/resource/Sales Invoice"
+        items_url = (
+            f"{erp.erp_url}/api/resource/Item"
         )
 
-        invoices_response = requests.get(
-            invoices_url,
+        items_response = requests.get(
+            items_url,
             headers=headers
         )
 
-        invoices = invoices_response.json().get(
+        items = items_response.json().get(
             "data",
             []
         )
 
-        complete_invoices = []
+        complete_items = []
 
-        for invoice in invoices:
+        for item in items:
 
-            invoice_name = invoice.get("name")
+            item_name = item.get("name")
 
-            invoice_doc = requests.get(
-                f"{erp.erp_url}/api/resource/Sales Invoice/{invoice_name}",
+            item_doc = requests.get(
+                f"{erp.erp_url}/api/resource/Item/{item_name}",
                 headers=headers
             ).json()["data"]
 
-            complete_invoices.append(
-                invoice_doc
+            complete_items.append(
+                item_doc
             )
 
-        return complete_invoices
+        return complete_items
     finally:
         db.close()
 
-def push_invoices_to_erpnext(user_id,tenant_id):
+def fetch_complete_erpnext_sales_orders(
+    erp_url,
+    api_key,
+    api_secret
+):
 
-    db = SessionLocal()
-    try:
+    headers = {
+        "Authorization":
+            f"token {api_key}:{api_secret}"
+    }
 
-        tenant_id = db.execute(
-            text("""
-                SELECT tenant_id
-                FROM users
-                WHERE id = :user_id
-            """),
-            {
-                "user_id": user_id
-            }
-        ).scalar()
+    sales_orders_url = (
+        f"{erp_url}/api/resource/Sales Order"
+    )
 
-        erp = db.execute(
-            text("""
-                SELECT *
-                FROM erpnext_integrations
-                WHERE tenant_id = :tenant_id
-                ORDER BY id DESC
-                LIMIT 1
-            """),
-            {
-                "tenant_id": tenant_id,
-            }
-        ).fetchone()
+    sales_orders = requests.get(
+        sales_orders_url,
+        headers=headers
+    ).json().get(
+        "data",
+        []
+    )
 
-        if not erp:
-            return {
-                "error": "No ERPNext integration found"
-            }
+    complete_sales_orders = []
 
-        invoices = db.execute(
-            text("""
-                SELECT *
-                FROM unified_invoices
-                WHERE tenant_id = :tenant_id
-            """),
-            {
-                "tenant_id": tenant_id,
-            }
-        ).fetchall()
+    for so in sales_orders:
 
-        results = []
+        so_name = so["name"]
 
-        for invoice in invoices:
+        so_response = requests.get(
+            f"{erp_url}/api/resource/Sales Order/{so_name}",
+            headers=headers
+        )
 
-            url = (
-                f"{erp.erp_url}/api/resource/Sales Invoice"
+        if so_response.status_code == 200:
+
+            complete_sales_orders.append(
+                so_response.json()["data"]
             )
 
-            headers = {
-                "Authorization": (
-                    f"token {erp.api_key}:{erp.api_secret}"
-                ),
-                "Content-Type": "application/json"
-            }
-
-            payload = {
-                "customer": invoice.customer_name,
-                "posting_date": str(
-                    invoice.invoice_date
-                ),
-                "due_date": str(
-                    invoice.due_date
-                ),
-                "items": [
-                    {
-                        "item_code": "TEST-001",
-                        "qty": 1,
-                        "rate": float(
-                            invoice.total_amount
-                        )
-                    }
-                ]
-            }
-
-            response = requests.post(
-                url,
-                json=payload,
-                headers=headers
-            )
-
-            results.append(
-                {
-                    "invoice_number":
-                        invoice.invoice_number,
-                    "status_code":
-                        response.status_code,
-                    "response":
-                        response.json()
-                }
-            )
-
-        return results
-    finally:
-        db.close()
-
+    return complete_sales_orders

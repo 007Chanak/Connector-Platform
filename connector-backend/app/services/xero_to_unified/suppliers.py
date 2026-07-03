@@ -1,6 +1,7 @@
 import requests
 from sqlalchemy import text
 from app.database import SessionLocal
+from datetime import datetime
 
 from app.services.xero_auth_service import (
     refresh_xero_token
@@ -8,102 +9,13 @@ from app.services.xero_auth_service import (
 from fastapi import Depends
 from app.dependencies.auth import get_current_user
 
-def transform_xero_supplier(contact):
+from app.services.xero_to_unified.transformer import (
+    transform_supplier_using_mapping
+)
 
-    phone = ""
-
-    phones = contact.get("Phones", [])
-
-    for p in phones:
-        if p.get("PhoneNumber"):
-            phone = p.get("PhoneNumber")
-            break
-
-    address = ""
-    address_obj = None
-    postal_code = ""
-
-    for addr in contact.get("Addresses", []):
-
-        if (
-            addr.get("AddressLine1")
-            or addr.get("City")
-            or addr.get("Region")
-            or addr.get("Country")
-        ):
-            address_obj = addr
-            break
-
-    if address_obj:
-
-        postal_code = (
-            address_obj.get("PostalCode")
-            or ""
-        )
-
-        address_parts = []
-
-        if address_obj.get("AddressLine1"):
-            address_parts.append(
-                address_obj["AddressLine1"]
-            )
-
-        if address_obj.get("City"):
-            address_parts.append(
-                address_obj["City"]
-            )
-
-        if address_obj.get("Region"):
-            address_parts.append(
-                address_obj["Region"]
-            )
-
-        if address_obj.get("Country"):
-            address_parts.append(
-                address_obj["Country"]
-            )
-
-        address = ", ".join(address_parts)
-
-    contact_name = " ".join(
-        filter(
-            None,
-            [
-                contact.get("FirstName"),
-                contact.get("LastName")
-            ]
-        )
-    )
-
-    if not contact_name:
-        contact_name = contact.get("Name", "")
-
-    return {
-
-        "external_id": contact.get("ContactID"),
-
-        "supplier_name": contact.get("Name"),
-
-        "contact_name": contact_name,
-
-        "email": contact.get("EmailAddress"),
-
-        "phone": phone,
-
-        "address": address,
-
-        "postal_code": postal_code,
-
-        "tax_number": contact.get("TaxNumber"),
-
-        "website": contact.get("Website"),
-
-        "status": contact.get("ContactStatus"),
-
-        "created_at": None,
-
-        "source": "xero"
-    }
+from app.services.mapping_service import (
+    get_mapping_dict
+)
 
 
 def sync_xero_suppliers_service(user_id,tenant_id):
@@ -178,6 +90,12 @@ def sync_xero_suppliers_service(user_id,tenant_id):
         print(data)
         contacts = data.get("Contacts", [])
 
+        mapping = get_mapping_dict(
+            tenant_id=tenant_id,
+            entity_type="suppliers",
+            source_system="xero"
+        )
+
         synced = []
 
         for contact in contacts:
@@ -187,7 +105,12 @@ def sync_xero_suppliers_service(user_id,tenant_id):
             if contact.get("ContactStatus") != "ACTIVE":
                 continue
 
-            supplier = transform_xero_supplier(contact)
+            supplier = (
+                transform_supplier_using_mapping(
+                    contact,
+                    mapping
+                )
+            )
 
             print(
                 "INSERTING:",
@@ -230,6 +153,9 @@ def sync_xero_suppliers_service(user_id,tenant_id):
                             email = :email,
                             phone = :phone,
                             address = :address,
+                            city = :city,
+                            state = :state,
+                            country = :country,
                             postal_code = :postal_code,
                             tax_number = :tax_number,
                             website = :website,
@@ -238,14 +164,29 @@ def sync_xero_suppliers_service(user_id,tenant_id):
                     """),
                     {
                         "id": existing_supplier.id,
+
                         "supplier_name": supplier.get("supplier_name"),
+
                         "contact_name": supplier.get("contact_name"),
+
                         "email": supplier.get("email"),
+
                         "phone": supplier.get("phone"),
+
                         "address": supplier.get("address"),
+
+                        "city": supplier.get("city"),
+
+                        "state": supplier.get("state"),
+
+                        "country": supplier.get("country"),
+
                         "postal_code": supplier.get("postal_code"),
+
                         "tax_number": supplier.get("tax_number"),
+
                         "website": supplier.get("website"),
+
                         "status": supplier.get("status")
                     }
                 )
@@ -264,6 +205,9 @@ def sync_xero_suppliers_service(user_id,tenant_id):
                         email,
                         phone,
                         address,
+                        city,
+                        state,
+                        country,
                         postal_code,
                         tax_number,
                         website,
@@ -280,6 +224,9 @@ def sync_xero_suppliers_service(user_id,tenant_id):
                         :email,
                         :phone,
                         :address,
+                        :city,
+                        :state,
+                        :country,
                         :postal_code,
                         :tax_number,
                         :website,
@@ -289,10 +236,10 @@ def sync_xero_suppliers_service(user_id,tenant_id):
                 """),
                 {
                     "user_id": user_id,
-                    
+
                     "tenant_id": tenant_id,
 
-                    "source": supplier.get("source"),
+                    "source": "xero",
 
                     "external_id": supplier.get("external_id"),
 
@@ -306,6 +253,12 @@ def sync_xero_suppliers_service(user_id,tenant_id):
 
                     "address": supplier.get("address"),
 
+                    "city": supplier.get("city"),
+
+                    "state": supplier.get("state"),
+
+                    "country": supplier.get("country"),
+
                     "postal_code": supplier.get("postal_code"),
 
                     "tax_number": supplier.get("tax_number"),
@@ -314,7 +267,7 @@ def sync_xero_suppliers_service(user_id,tenant_id):
 
                     "status": supplier.get("status"),
 
-                    "created_at": supplier.get("created_at")
+                    "created_at": datetime.utcnow()
                 }
             )
 

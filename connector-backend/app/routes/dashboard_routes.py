@@ -72,6 +72,8 @@ def get_dashboard_stats(
             }
         ).scalar() > 0
 
+        
+
         return {
             "customers": customers,
             "invoices": invoices,
@@ -81,3 +83,5 @@ def get_dashboard_stats(
         }
     finally:
         db.close()
+
+        

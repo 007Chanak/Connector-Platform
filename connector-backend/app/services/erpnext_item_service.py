@@ -4,7 +4,7 @@ from app.database import SessionLocal
 
 
 
-def fetch_erpnext_items(user_id,tenant_id):
+def fetch_erpnext_complete_items(user_id,tenant_id):
 
     db = SessionLocal()
     try:

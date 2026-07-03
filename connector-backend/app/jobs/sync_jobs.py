@@ -2,7 +2,7 @@ from apscheduler.schedulers.background import (
     BackgroundScheduler
 )
 
-from app.services.xero_sync_service import (
+from app.services.xero_to_unified.customers import (
     sync_xero_customers_service
 )
 

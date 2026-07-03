@@ -1,16 +1,24 @@
 from sqlalchemy import text
-
 from app.database import SessionLocal
 
 from app.services.xero_push_service import (
-    push_customer_to_xero
+    push_item_to_xero,
+    push_item_exists_check
+)
+
+from app.services.mapping_service import (
+    get_target_mapping_dict,
+    build_payload_from_mapping
+)
+
+from app.services.xero_auth_service import (
+    refresh_xero_token
 )
 
 
-def push_unified_customers_to_xero(
-    access_token,
-    tenant_id,
-    user_id
+def push_unified_items_to_xero(
+    user_id,
+    tenant_id
 ):
 
     db = SessionLocal()
@@ -28,10 +36,62 @@ def push_unified_customers_to_xero(
             }
         ).scalar()
 
-        customers = db.execute(
+        integration = db.execute(
             text("""
                 SELECT *
-                FROM unified_customers
+                FROM integrations
+                WHERE
+                    tenant_id_fk = :tenant_id
+                    AND provider = 'xero'
+                ORDER BY id DESC
+                LIMIT 1
+            """),
+            {
+                "tenant_id": app_tenant_id
+            }
+        ).fetchone()
+
+        try:
+
+            refresh_result = refresh_xero_token(
+                integration.id
+            )
+
+            access_token = refresh_result[
+                "access_token"
+            ]
+
+        except Exception as e:
+
+            print("=" * 80)
+            print("TOKEN REFRESH FAILED")
+            print(str(e))
+            print("=" * 80)
+
+            access_token = integration.access_token
+
+        if not integration:
+
+            return {
+                "error":
+                    "No Xero integration found"
+            }
+
+        mapping = get_target_mapping_dict(
+            app_tenant_id,
+            "items",
+            "xero"
+        )
+
+        print("=" * 80)
+        print("ITEM TARGET MAPPING")
+        print(mapping)
+        print("=" * 80)
+
+        items = db.execute(
+            text("""
+                SELECT *
+                FROM unified_items
                 WHERE
                     tenant_id = :tenant_id
                     AND source = 'erpnext'
@@ -43,20 +103,21 @@ def push_unified_customers_to_xero(
         ).fetchall()
 
         print("=" * 80)
-        print("UNIFIED CUSTOMERS FOUND")
-        print(len(customers))
+        print("UNIFIED ITEMS FOUND")
+        print(len(items))
         print("=" * 80)
 
         synced = []
 
         skipped = []
 
-        for customer in customers:
+        for item in items:
 
-            print("\n")
+            print()
             print("=" * 80)
-            print("PROCESSING CUSTOMER")
-            print(customer.customer_name)
+            print("PROCESSING ITEM")
+            print(item.item_code)
+            print(item.item_name)
             print("=" * 80)
 
             migration_check = db.execute(
@@ -67,14 +128,14 @@ def push_unified_customers_to_xero(
                         tenant_id = :tenant_id
                         AND source_system = 'erpnext'
                         AND target_system = 'xero'
-                        AND source_invoice_number = :customer_name
+                        AND source_invoice_number = :item_code
                 """),
                 {
                     "tenant_id":
                         app_tenant_id,
 
-                    "customer_name":
-                        customer.customer_name
+                    "item_code":
+                        item.item_code
                 }
             ).fetchone()
 
@@ -87,8 +148,8 @@ def push_unified_customers_to_xero(
 
                 skipped.append(
                     {
-                        "customer_name":
-                            customer.customer_name,
+                        "item_code":
+                            item.item_code,
 
                         "reason":
                             "Already Migrated"
@@ -98,10 +159,10 @@ def push_unified_customers_to_xero(
                 continue
 
             exists_in_xero = (
-                push_customer_exists_check(
-                    access_token,
-                    tenant_id,
-                    customer.customer_name
+                push_item_exists_check(
+                    integration.access_token,
+                    integration.tenant_id,
+                    item.item_code
                 )
             )
 
@@ -114,8 +175,8 @@ def push_unified_customers_to_xero(
 
                 skipped.append(
                     {
-                        "customer_name":
-                            customer.customer_name,
+                        "item_code":
+                            item.item_code,
 
                         "reason":
                             "Already Exists In Xero"
@@ -124,54 +185,26 @@ def push_unified_customers_to_xero(
 
                 continue
 
-            payload = {
-
-                "customer_name":
-                    customer.customer_name,
-
-                "contact_name":
-                    customer.contact_name,
-
-                "email":
-                    customer.email,
-
-                "phone":
-                    customer.phone,
-
-                "address":
-                    customer.address,
-
-                "postal_code":
-                    customer.postal_code,
-
-                "tax_number":
-                    customer.tax_number,
-
-                "website":
-                    customer.website,
-
-                "city":
-                    customer.city,
-
-                "state":
-                    customer.state,
-
-                "country":
-                    customer.country,
-
-                "status":
-                    customer.status
-            }
+            payload = build_payload_from_mapping(
+                item,
+                mapping
+            )
 
             print("=" * 80)
-            print("XERO CUSTOMER PAYLOAD")
+            print("UNIFIED ITEM")
+            print(dict(item._mapping))
+            print("=" * 80)
+
+            print("=" * 80)
+            print("XERO ITEM PAYLOAD")
             print(payload)
             print("=" * 80)
 
-            response = push_customer_to_xero(
-                access_token,
-                tenant_id,
-                payload
+            response = push_item_to_xero(
+                integration.access_token,
+                integration.tenant_id,
+                payload,
+                app_tenant_id
             )
 
             print("=" * 80)
@@ -181,10 +214,14 @@ def push_unified_customers_to_xero(
 
             success = False
 
-            if isinstance(response, dict):
+            if isinstance(
+                response,
+                dict
+            ):
 
-                if response.get("Contacts"):
-
+                if response.get(
+                    "Items"
+                ):
                     success = True
 
             if success:
@@ -222,7 +259,7 @@ def push_unified_customers_to_xero(
                             "xero",
 
                         "source_invoice_number":
-                            customer.customer_name
+                            item.item_code
                     }
                 )
 
@@ -230,15 +267,18 @@ def push_unified_customers_to_xero(
 
             synced.append(
                 {
-                    "customer_name":
-                        customer.customer_name,
+                    "item_code":
+                        item.item_code,
+
+                    "item_name":
+                        item.item_name,
 
                     "response":
                         response
                 }
             )
 
-        print("\n")
+        print()
         print("=" * 80)
         print("FINAL RESULTS")
         print(
@@ -255,7 +295,7 @@ def push_unified_customers_to_xero(
         return {
 
             "message":
-                "Customers pushed to Xero",
+                "Items pushed to Xero",
 
             "total_synced":
                 len(synced),
@@ -263,72 +303,13 @@ def push_unified_customers_to_xero(
             "total_skipped":
                 len(skipped),
 
-            "synced_customers":
+            "synced_items":
                 synced,
 
-            "skipped_customers":
+            "skipped_items":
                 skipped
         }
 
     finally:
 
         db.close()
-
-
-def push_customer_exists_check(
-    access_token,
-    tenant_id,
-    customer_name
-):
-
-    import requests
-
-    url = (
-        "https://api.xero.com/api.xro/2.0/Contacts"
-    )
-
-    headers = {
-
-        "Authorization":
-            f"Bearer {access_token}",
-
-        "Xero-tenant-id":
-            tenant_id,
-
-        "Accept":
-            "application/json"
-    }
-
-    response = requests.get(
-        url,
-        headers=headers
-    )
-
-    print("=" * 80)
-    print("XERO CONTACT CHECK")
-    print(response.status_code)
-    print("=" * 80)
-
-    if response.status_code != 200:
-
-        return False
-
-    contacts = response.json().get(
-        "Contacts",
-        []
-    )
-
-    for contact in contacts:
-
-        if (
-            contact.get(
-                "Name",
-                ""
-            ).strip().lower()
-            ==
-            customer_name.strip().lower()
-        ):
-
-            return True
-
-    return False

@@ -3,7 +3,7 @@ from sqlalchemy import text
 from app.database import SessionLocal
 
 from app.services.erpnext_fetch_service import (
-    fetch_complete_erpnext_suppliers
+    fetch_complete_erpnext_customers
 )
 
 from app.services.mapping_service import (
@@ -11,11 +11,11 @@ from app.services.mapping_service import (
 )
 
 from app.services.erpnext_to_unified.transformer import (
-    transform_erpnext_supplier_using_mapping
+    transform_erpnext_customer_using_mapping
 )
 
 
-def sync_erpnext_suppliers_service(
+def sync_erpnext_customers_service(
     user_id,
     tenant_id
 ):
@@ -23,6 +23,26 @@ def sync_erpnext_suppliers_service(
     db = SessionLocal()
 
     try:
+
+        customers = (
+            fetch_complete_erpnext_customers(
+                user_id,
+                tenant_id
+            )
+        )
+
+        mapping = get_mapping_dict(
+            tenant_id=tenant_id,
+            entity_type="customers",
+            source_system="erpnext"
+        )
+
+        print("=" * 80)
+        print("ERPNEXT CUSTOMER MAPPING")
+        print(mapping)
+        print("=" * 80)
+
+        synced = []
 
         tenant_id = db.execute(
             text("""
@@ -33,139 +53,91 @@ def sync_erpnext_suppliers_service(
             {
                 "user_id": user_id
             }
-        ).scalar()        
+        ).scalar()
 
         print("=" * 80)
-        print("FETCHING ERPNEXT SUPPLIERS")
+        print("ERPNEXT CUSTOMERS FOUND")
+        print(len(customers))
         print("=" * 80)
 
-        suppliers = (
-            fetch_complete_erpnext_suppliers(
-                user_id,
-                tenant_id
-            )
-        )
+        for customer in customers:
 
-        print(
-            f"SUPPLIERS FOUND: {len(suppliers)}"
-        )
-
-        print("=" * 80)
-        print("SYNC PARAM TENANT:", tenant_id)
-        print("USER ID:", user_id)
-        print("=" * 80)
-
-        mapping = get_mapping_dict(
-
-            tenant_id=tenant_id,
-
-            entity_type="erpnext_suppliers",
-
-            source_system="erpnext"
-        )
-
-        print("=" * 80)
-        print("ERPNEXT → UNIFIED MAPPING")
-        print(mapping)
-        print("=" * 80)
-
-        synced = []
-
-        for supplier in suppliers:
-
-            print()
+            print("\n")
             print("=" * 80)
-            print("RAW ERPNEXT SUPPLIER")
-            print(supplier)
+            print("RAW ERPNEXT CUSTOMER")
+            print(customer)
             print("=" * 80)
 
-            print("=" * 80)
-            print("MAPPING TYPE:", type(mapping))
-            print("MAPPING VALUE:", mapping)
-            print("=" * 80)
-
-            transformed_supplier = (
-                transform_erpnext_supplier_using_mapping(
-                    supplier,
+            transformed_customer = (
+                transform_erpnext_customer_using_mapping(
+                    customer,
                     mapping
                 )
             )
 
-            print()
             print("=" * 80)
-            print("TRANSFORMED SUPPLIER")
-            print(transformed_supplier)
+            print("TRANSFORMED CUSTOMER")
+            print(transformed_customer)
             print("=" * 80)
-
-            supplier_name = (
-                transformed_supplier.get(
-                    "supplier_name"
-                )
-            )
-
-            if not supplier_name:
-
-                print(
-                    "SKIPPED - supplier_name missing"
-                )
-
-                continue
 
             existing = db.execute(
                 text("""
                     SELECT id
-                    FROM unified_suppliers
+                    FROM unified_customers
                     WHERE
                         tenant_id = :tenant_id
-                        AND supplier_name = :supplier_name
+                        AND customer_name = :customer_name
                         AND source = 'erpnext'
                 """),
                 {
                     "tenant_id":
                         tenant_id,
 
-                    "supplier_name":
-                        supplier_name
+                    "customer_name":
+                        transformed_customer.get(
+                            "customer_name"
+                        )
                 }
             ).fetchone()
 
             print(
                 "EXISTING CHECK:",
-                supplier_name,
+                transformed_customer.get(
+                    "customer_name"
+                ),
                 existing
             )
 
             if existing:
 
                 print(
-                    f"SKIPPED - {supplier_name} already exists"
+                    "SKIPPED - ALREADY EXISTS"
                 )
 
                 continue
 
-            print()
             print("=" * 80)
-            print("INSERTING SUPPLIER")
-            print(transformed_supplier)
+            print("INSERTING CUSTOMER")
+            print(transformed_customer)
             print("=" * 80)
 
             db.execute(
                 text("""
-                    INSERT INTO unified_suppliers
+                    INSERT INTO unified_customers
                     (
                         tenant_id,
                         user_id,
                         source,
                         external_id,
-                        supplier_name,
+                        customer_name,
                         contact_name,
                         email,
                         phone,
                         address,
+                        postal_code,
                         city,
                         state,
                         country,
-                        postal_code,
                         tax_number,
                         website,
                         status
@@ -176,15 +148,15 @@ def sync_erpnext_suppliers_service(
                         :user_id,
                         :source,
                         :external_id,
-                        :supplier_name,
+                        :customer_name,
                         :contact_name,
                         :email,
                         :phone,
                         :address,
+                        :postal_code,
                         :city,
                         :state,
                         :country,
-                        :postal_code,
                         :tax_number,
                         :website,
                         :status
@@ -201,93 +173,93 @@ def sync_erpnext_suppliers_service(
                         "erpnext",
 
                     "external_id":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "external_id"
                         ),
 
-                    "supplier_name":
-                        transformed_supplier.get(
-                            "supplier_name"
+                    "customer_name":
+                        transformed_customer.get(
+                            "customer_name"
                         ),
 
                     "contact_name":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "contact_name"
                         ),
 
                     "email":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "email"
                         ),
 
                     "phone":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "phone"
                         ),
 
                     "address":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "address"
                         ),
 
+                    "postal_code":
+                        transformed_customer.get(
+                            "postal_code"
+                        ),
+
                     "city":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "city"
                         ),
 
                     "state":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "state"
                         ),
 
                     "country":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "country"
                         ),
 
-                    "postal_code":
-                        transformed_supplier.get(
-                            "postal_code"
-                        ),
-
                     "tax_number":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "tax_number"
                         ),
 
                     "website":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "website"
                         ),
 
                     "status":
-                        transformed_supplier.get(
+                        transformed_customer.get(
                             "status"
                         )
                 }
             )
 
             synced.append(
-                transformed_supplier
+                transformed_customer
             )
 
         db.commit()
 
-        print()
+        print("\n")
         print("=" * 80)
         print("SYNC COMPLETE")
-        print(f"TOTAL SYNCED: {len(synced)}")
+        print("TOTAL SYNCED:", len(synced))
         print("=" * 80)
 
         return {
 
             "message":
-                "ERPNext suppliers synced successfully",
+                "ERPNext customers synced successfully",
 
             "total_synced":
                 len(synced),
 
-            "suppliers":
+            "customers":
                 synced
         }
 

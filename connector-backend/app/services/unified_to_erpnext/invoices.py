@@ -35,7 +35,7 @@ def make_json_safe(obj):
     return obj
 
 
-def push_purchase_orders_to_erpnext(
+def push_invoices_to_erpnext(
     user_id,
     tenant_id
 ):
@@ -75,70 +75,47 @@ def push_purchase_orders_to_erpnext(
                     "No ERPNext integration found"
             }
 
-        purchase_order_mapping = (
+        sales_invoice_mapping = (
             get_target_mapping_dict(
                 tenant_id=tenant_id,
-                entity_type="purchase_orders",
+                entity_type="invoices",
                 target_system="erpnext"
             )
         )
 
-        purchase_order_item_mapping = (
+        sales_invoice_item_mapping = (
             get_target_mapping_dict(
                 tenant_id=tenant_id,
-                entity_type="purchase_order_items",
+                entity_type="invoice_items",
                 target_system="erpnext"
             )
         )
 
-        print("=" * 80)
-        print("PURCHASE ORDER TARGET MAPPING")
-        print(purchase_order_mapping)
-        print("=" * 80)
-
-        print("=" * 80)
-        print("PURCHASE ORDER ITEM TARGET MAPPING")
-        print(purchase_order_item_mapping)
-        print("=" * 80)
-
-        purchase_orders = db.execute(
+        invoices = db.execute(
             text("""
                 SELECT *
-                FROM unified_purchase_orders
+                FROM unified_invoices
                 WHERE
                     tenant_id = :tenant_id
-                    AND source = 'xero'
+                    AND origin_system = 'xero'
             """),
             {
                 "tenant_id": tenant_id
             }
         ).fetchall()
 
-        print("=" * 80)
-        print("PURCHASE ORDERS FOUND")
-        print(len(purchase_orders))
-        print("=" * 80)
+        results = []
 
         headers = {
-
             "Authorization":
                 f"token {erp.api_key}:{erp.api_secret}",
-
             "Content-Type":
                 "application/json"
         }
 
-        results = []
+        for invoice in invoices:
 
-        for po in purchase_orders:
-
-            print("\n")
-            print("=" * 80)
-            print("PROCESSING PURCHASE ORDER")
-            print(po.po_number)
-            print("=" * 80)
-
-            existing_migration = db.execute(
+            migration_check = db.execute(
                 text("""
                     SELECT id
                     FROM migration_logs
@@ -146,28 +123,21 @@ def push_purchase_orders_to_erpnext(
                         tenant_id = :tenant_id
                         AND source_system = 'xero'
                         AND target_system = 'erpnext'
-                        AND source_invoice_number = :po_number
+                        AND source_invoice_number = :invoice_number
                 """),
                 {
-                    "tenant_id":
-                        tenant_id,
-
-                    "po_number":
-                        po.po_number
+                    "tenant_id": tenant_id,
+                    "invoice_number":
+                        invoice.invoice_number
                 }
             ).fetchone()
 
-            print(
-                "MIGRATION CHECK:",
-                existing_migration
-            )
-
-            if existing_migration:
+            if migration_check:
 
                 results.append(
                     {
-                        "po_number":
-                            po.po_number,
+                        "invoice_number":
+                            invoice.invoice_number,
 
                         "status":
                             "Skipped - Already Migrated"
@@ -176,33 +146,41 @@ def push_purchase_orders_to_erpnext(
 
                 continue
 
-            supplier_check = requests.get(
-                f"{erp.erp_url}/api/resource/Supplier/{po.supplier_name}",
+            customer_check = requests.get(
+                f"{erp.erp_url}/api/resource/Customer/{invoice.customer_name}",
                 headers=headers
             )
 
-            print(
-                "SUPPLIER CHECK STATUS:",
-                supplier_check.status_code
-            )
+            print("=" * 50)
+            print("CUSTOMER RESPONSE")
+            print(customer_check.status_code)
+            print(customer_check.text)
+            print("=" * 50)
 
-            if supplier_check.status_code != 200:
+            if customer_check.status_code == 200:
 
-                print(
-                    "SUPPLIER NOT FOUND:",
-                    po.supplier_name
+                customer_data = customer_check.json().get(
+                    "data",
+                    {}
                 )
+
+                print("=" * 50)
+                print("CUSTOMER DATA")
+                print(customer_data)
+                print("=" * 50)
+
+            if customer_check.status_code != 200:
 
                 results.append(
                     {
-                        "po_number":
-                            po.po_number,
+                        "invoice_number":
+                            invoice.invoice_number,
 
-                        "supplier":
-                            po.supplier_name,
+                        "customer":
+                            invoice.customer_name,
 
                         "status":
-                            "Skipped - Supplier Not Found"
+                            "Skipped - Customer Not Found"
                     }
                 )
 
@@ -210,167 +188,139 @@ def push_purchase_orders_to_erpnext(
 
             header_payload = (
                 build_payload_from_mapping(
-                    po,
-                    purchase_order_mapping
+                    invoice,
+                    sales_invoice_mapping
                 )
             )
-
-            print("=" * 80)
-            print("HEADER PAYLOAD FROM MAPPING")
-            print(header_payload)
-            print("=" * 80)
 
             item_rows = db.execute(
                 text("""
                     SELECT *
-                    FROM unified_purchase_order_items
+                    FROM unified_invoice_items
                     WHERE
                         tenant_id = :tenant_id
-                        AND po_external_id = :po_external_id
+                        AND invoice_external_id = :invoice_external_id
                 """),
                 {
                     "tenant_id":
                         tenant_id,
 
-                    "po_external_id":
-                        po.external_id
+                    "invoice_external_id":
+                        invoice.external_id
                 }
             ).fetchall()
 
-            print(
-                "ITEM ROWS FOUND:",
-                len(item_rows)
-            )
-
-            po_items = []
+            sales_items = []
 
             for item_row in item_rows:
-
-                print("\nRAW ITEM")
-
-                print(
-                    dict(
-                        item_row._mapping
-                    )
-                )
 
                 item_payload = (
                     build_payload_from_mapping(
                         item_row,
-                        purchase_order_item_mapping
+                        sales_invoice_item_mapping
                     )
                 )
 
-                print(
-                    "MAPPED ITEM:"
-                )
-
-                print(
+                sales_items.append(
                     item_payload
                 )
 
-                po_items.append(
-                    item_payload
-                )
+            #
+            # ERPNext generates these itself
+            #
 
             payload = {
 
-                "supplier":
-                    po.supplier_name,
+                "customer":
+                    invoice.customer_name,
 
-                "transaction_date":
-                    str(
-                        po.order_date
-                    ),
+                "set_posting_time":
+                    1,
 
-                "schedule_date":
-                    str(
-                        po.delivery_date
+                "posting_date":
+                    str(invoice.invoice_date),
+
+                "due_date":
+                    str(invoice.due_date),
+
+                "remarks":
+                    (
+                        f"Original Xero Invoice: "
+                        f"{invoice.invoice_number}"
                     ),
 
                 "items":
-                    po_items
+                    sales_items,
+
+                "payment_terms_template":
+                    None
             }
 
             payload = make_json_safe(
                 payload
             )
 
-            print("\n")
-            print("=" * 80)
-            print("FINAL ERP PAYLOAD")
+            print("=" * 50)
+            print("SALES INVOICE PAYLOAD:")
             print(payload)
-            print("=" * 80)
+            print("=" * 50)
+
+            print(
+                "POSTING DATE:",
+                payload.get("posting_date")
+            )
+
+            print(
+                "DUE DATE:",
+                payload.get("due_date")
+            )
+
+            from datetime import datetime
+
+            print(
+                "POSTING PARSED:",
+                datetime.strptime(
+                    str(invoice.invoice_date),
+                    "%Y-%m-%d"
+                )
+            )
+
+            print(
+                "DUE PARSED:",
+                datetime.strptime(
+                    str(invoice.due_date),
+                    "%Y-%m-%d"
+                )
+            )
+
+            print(
+                "RAW POSTING:",
+                invoice.invoice_date,
+                type(invoice.invoice_date)
+            )
+
+            print(
+                "RAW DUE:",
+                invoice.due_date,
+                type(invoice.due_date)
+            )
 
             response = requests.post(
-                f"{erp.erp_url}/api/resource/Purchase Order",
+                f"{erp.erp_url}/api/resource/Sales Invoice",
                 json=payload,
                 headers=headers
             )
 
-            print("=" * 80)
-            print("ERP STATUS CODE")
+            print("=" * 50)
+            print("SALES INVOICE RESPONSE")
             print(response.status_code)
-            print("=" * 80)
-
-            print("=" * 80)
-            print("RAW ERP RESPONSE")
             print(response.text)
-            print("=" * 80)
-
-            try:
-
-                response_data = (
-                    response.json()
-                )
-
-                print("=" * 80)
-                print("ERP JSON RESPONSE")
-                print(response_data)
-                print("=" * 80)
-
-            except Exception:
-
-                response_data = (
-                    response.text
-                )
+            print("=" * 50)
 
             if response.status_code in [
                 200,
                 201
             ]:
-
-                created_po = (
-                    response_data
-                    .get("data", {})
-                    .get("name")
-                )
-
-                print(
-                    "CREATED ERP PO:",
-                    created_po
-                )
-
-                if created_po:
-
-                    verify_response = requests.get(
-                        f"{erp.erp_url}/api/resource/Purchase Order/{created_po}",
-                        headers=headers
-                    )
-
-                    print("=" * 80)
-                    print("VERIFY STATUS")
-                    print(
-                        verify_response.status_code
-                    )
-                    print("=" * 80)
-
-                    print("=" * 80)
-                    print("VERIFY RESPONSE")
-                    print(
-                        verify_response.text
-                    )
-                    print("=" * 80)
 
                 db.execute(
                     text("""
@@ -405,19 +355,31 @@ def push_purchase_orders_to_erpnext(
                             "erpnext",
 
                         "source_invoice_number":
-                            po.po_number
+                            invoice.invoice_number
                     }
                 )
 
                 db.commit()
 
+            try:
+
+                response_data = (
+                    response.json()
+                )
+
+            except Exception:
+
+                response_data = (
+                    response.text
+                )
+
             results.append(
                 {
-                    "po_number":
-                        po.po_number,
+                    "invoice_number":
+                        invoice.invoice_number,
 
-                    "supplier":
-                        po.supplier_name,
+                    "customer":
+                        invoice.customer_name,
 
                     "status_code":
                         response.status_code,

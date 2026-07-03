@@ -7,13 +7,9 @@ from app.services.mapping_service import (
     get_target_mappings
 )
 
-def push_suppliers_to_erpnext(
-    user_id,
-    tenant_id
-):
+def push_customers_to_erpnext(user_id,tenant_id):
 
     db = SessionLocal()
-
     try:
 
         tenant_id = db.execute(
@@ -41,22 +37,20 @@ def push_suppliers_to_erpnext(
         ).fetchone()
 
         if not erp:
-
             return {
-                "error":
-                    "No ERPNext integration found"
+                "error": "No ERPNext integration found"
             }
-
+        
         target_mappings = get_target_mappings(
             tenant_id=tenant_id,
-            entity_type="suppliers",
+            entity_type="customers",
             target_system="erpnext"
         )
 
-        suppliers = db.execute(
+        customers = db.execute(
             text("""
                 SELECT *
-                FROM unified_suppliers
+                FROM unified_customers
                 WHERE
                     tenant_id = :tenant_id
                     AND source = 'xero'
@@ -65,11 +59,10 @@ def push_suppliers_to_erpnext(
                 "tenant_id": tenant_id,
             }
         ).fetchall()
-        
 
         results = []
 
-        for supplier in suppliers:
+        for customer in customers:
 
             headers = {
                 "Authorization": (
@@ -78,9 +71,10 @@ def push_suppliers_to_erpnext(
                 "Content-Type": "application/json"
             }
 
+            # CHECK IF CUSTOMER EXISTS
             check_url = (
-                f"{erp.erp_url}/api/resource/Supplier/"
-                f"{supplier.supplier_name}"
+                f"{erp.erp_url}/api/resource/Customer/"
+                f"{customer.customer_name}"
             )
 
             check_response = requests.get(
@@ -92,9 +86,8 @@ def push_suppliers_to_erpnext(
 
                 results.append(
                     {
-                        "supplier_name":
-                            supplier.supplier_name,
-
+                        "customer_name":
+                            customer.customer_name,
                         "status":
                             "Skipped - Already Exists"
                     }
@@ -102,45 +95,39 @@ def push_suppliers_to_erpnext(
 
                 continue
 
-            supplier_payload = build_payload_from_mapping(
-                supplier,
+            url = (
+                f"{erp.erp_url}/api/resource/Customer"
+            )
+
+            payload = build_payload_from_mapping(
+                customer,
                 target_mappings.get(
-                    "Supplier",
+                    "Customer",
                     {}
                 )
             )
 
-            supplier_payload[
-                "supplier_group"
-            ] = "Services"
-
-            supplier_payload[
-                "supplier_type"
-            ] = "Company"
-
-            print("=" * 50)
-            print("SUPPLIER NAME:", supplier.supplier_name)
-            print("TARGET MAPPINGS:", target_mappings)
-            print("SUPPLIER PAYLOAD:", supplier_payload)
+            payload["customer_type"] = "Company"
 
             response = requests.post(
-                f"{erp.erp_url}/api/resource/Supplier",
-                json=supplier_payload,
+                url,
+                json=payload,
                 headers=headers
             )
 
-            print("SUPPLIER STATUS:")
-            print(response.status_code)
-
-            print("SUPPLIER RESPONSE:")
-            print(response.text)
-
-            print("ERP URL:", erp.erp_url)
-
             if response.status_code in [200, 201]:
 
+                print(
+                    "CUSTOMER DATA:",
+                    customer.customer_name,
+                    customer.contact_name,
+                    customer.email,
+                    customer.phone,
+                    customer.address
+                )
+
                 contact_payload = build_payload_from_mapping(
-                    supplier,
+                    customer,
                     target_mappings.get(
                         "Contact",
                         {}
@@ -148,39 +135,34 @@ def push_suppliers_to_erpnext(
                 )
 
                 if (
-                    "first_name"
-                    not in contact_payload
-                    and supplier.supplier_name
+                    "first_name" not in contact_payload
+                    and customer.customer_name
                 ):
-
                     contact_payload[
                         "first_name"
-                    ] = (
-                        supplier.supplier_name
-                    )
+                    ] = customer.customer_name
 
-                if supplier.email:
+                if customer.email:
 
                     contact_payload[
                         "email_ids"
                     ] = [
                         {
                             "email_id":
-                                supplier.email,
-
+                                customer.email,
                             "is_primary":
                                 1
                         }
                     ]
 
-                if supplier.phone:
+                if customer.phone:
 
                     contact_payload[
                         "phone_nos"
                     ] = [
                         {
                             "phone":
-                                supplier.phone,
+                                customer.phone,
 
                             "is_primary_phone":
                                 1,
@@ -195,17 +177,12 @@ def push_suppliers_to_erpnext(
                 ] = [
                     {
                         "link_doctype":
-                            "Supplier",
+                            "Customer",
 
                         "link_name":
-                            supplier.supplier_name
+                            customer.customer_name
                     }
                 ]
-
-                print(
-                    "CONTACT PAYLOAD:",
-                    contact_payload
-                )
 
                 contact_response = requests.post(
                     f"{erp.erp_url}/api/resource/Contact",
@@ -213,8 +190,21 @@ def push_suppliers_to_erpnext(
                     headers=headers
                 )
 
+                print(
+                    "CONTACT:",
+                    customer.customer_name,
+                    contact_response.status_code,
+                    contact_response.json()
+                )
+
+                print(
+                    "ADDRESS DEBUG:",
+                    customer.customer_name,
+                    repr(customer.address)
+                )
+
                 address_payload = build_payload_from_mapping(
-                    supplier,
+                    customer,
                     target_mappings.get(
                         "Address",
                         {}
@@ -222,52 +212,38 @@ def push_suppliers_to_erpnext(
                 )
 
                 address_parts = (
-                    supplier.address.split(",")
-                    if supplier.address
+                    customer.address.split(",")
+                    if customer.address
                     else []
                 )
 
                 if (
-                    "state"
-                    not in address_payload
+                    "state" not in address_payload
                     and len(address_parts) > 2
                 ):
-
-                    address_payload[
-                        "state"
-                    ] = (
+                    address_payload["state"] = (
                         address_parts[2].strip()
                     )
 
                 if (
-                    "country"
-                    not in address_payload
+                    "country" not in address_payload
                     and len(address_parts) > 3
                 ):
-
-                    address_payload[
-                        "country"
-                    ] = (
+                    address_payload["country"] = (
                         address_parts[3].strip()
                     )
 
                 if (
-                    "city"
-                    not in address_payload
+                    "city" not in address_payload
                     and len(address_parts) > 1
                 ):
-
-                    address_payload[
-                        "city"
-                    ] = (
+                    address_payload["city"] = (
                         address_parts[1].strip()
                     )
 
                 address_payload[
                     "address_title"
-                ] = (
-                    supplier.supplier_name
-                )
+                ] = customer.customer_name
 
                 address_payload[
                     "address_type"
@@ -278,12 +254,18 @@ def push_suppliers_to_erpnext(
                 ] = [
                     {
                         "link_doctype":
-                            "Supplier",
+                            "Customer",
 
                         "link_name":
-                            supplier.supplier_name
+                            customer.customer_name
                     }
                 ]
+
+                print(
+                    "POSTAL TO ERP:",
+                    customer.customer_name,
+                    customer.postal_code
+                )
 
                 print(
                     "ADDRESS PAYLOAD:",
@@ -296,15 +278,14 @@ def push_suppliers_to_erpnext(
                     headers=headers
                 )
 
-                print(
-                    "ADDRESS STATUS:",
-                    address_response.status_code
-                )
+                print("ADDRESS PAYLOAD:")
+                print(address_payload)
 
-                print(
-                    "ADDRESS RESPONSE:",
-                    address_response.text
-                )
+                print("ADDRESS STATUS:")
+                print(address_response.status_code)
+
+                print("ADDRESS RESPONSE:")
+                print(address_response.text)
 
                 contact_name = (
                     contact_response.json()
@@ -318,35 +299,28 @@ def push_suppliers_to_erpnext(
                     .get("name")
                 )
 
-                supplier_update = {
-                    "supplier_primary_contact":
-                        contact_name,
-
-                    "supplier_primary_address":
-                        address_name
+                customer_update = {
+                    "customer_primary_contact": contact_name,
+                    "customer_primary_address": address_name
                 }
 
                 requests.put(
-                    f"{erp.erp_url}/api/resource/Supplier/{supplier.supplier_name}",
-                    json=supplier_update,
+                    f"{erp.erp_url}/api/resource/Customer/{customer.customer_name}",
+                    json=customer_update,
                     headers=headers
                 )
 
             results.append(
                 {
-                    "supplier_name":
-                        supplier.supplier_name,
-
+                    "customer_name":
+                        customer.customer_name,
                     "status_code":
                         response.status_code,
-
                     "response":
                         response.json()
                 }
             )
 
         return results
-
     finally:
-
         db.close()

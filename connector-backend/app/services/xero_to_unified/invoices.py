@@ -1,9 +1,7 @@
 from sqlalchemy import text
-
 from app.database import SessionLocal
-
 from app.services.xero_fetch_service import (
-    fetch_complete_xero_purchase_orders
+    fetch_complete_xero_invoices
 )
 
 from app.services.mapping_service import (
@@ -11,12 +9,11 @@ from app.services.mapping_service import (
 )
 
 from app.services.xero_to_unified.transformer import (
-    transform_purchase_order_using_mapping,
-    transform_purchase_order_item_using_mapping
+    transform_invoice_using_mapping,
+    transform_invoice_item_using_mapping
 )
 
-
-def sync_xero_purchase_orders_service(
+def sync_xero_invoices_service(
     user_id,
     tenant_id
 ):
@@ -25,22 +22,22 @@ def sync_xero_purchase_orders_service(
 
     try:
 
-        purchase_orders = (
-            fetch_complete_xero_purchase_orders(
+        invoices = (
+            fetch_complete_xero_invoices(
                 user_id,
                 tenant_id
             )
         )
 
-        po_mapping = get_mapping_dict(
+        mapping = get_mapping_dict(
             tenant_id=tenant_id,
-            entity_type="purchase_orders",
+            entity_type="invoices",
             source_system="xero"
         )
 
-        po_item_mapping = get_mapping_dict(
+        invoice_item_mapping = get_mapping_dict(
             tenant_id=tenant_id,
-            entity_type="purchase_order_items",
+            entity_type="invoice_items",
             source_system="xero"
         )
 
@@ -57,165 +54,210 @@ def sync_xero_purchase_orders_service(
             }
         ).scalar()
 
-        for po in purchase_orders:
+        for invoice in invoices:
 
-            transformed_po = (
-                transform_purchase_order_using_mapping(
-                    po,
-                    po_mapping
+            if invoice.get("Type") != "ACCREC":
+                continue
+
+            valid_statuses = [
+                "DRAFT",
+                "AUTHORISED",
+                "PAID",
+                "UNPAID"
+            ]
+
+            if invoice.get("Status") not in valid_statuses:
+                continue
+
+            transformed_invoice = (
+                transform_invoice_using_mapping(
+                    invoice,
+                    mapping
                 )
             )
 
-            existing_po = db.execute(
+            print(
+                "INVOICE DATA:",
+                transformed_invoice
+            )
+
+            existing_invoice = db.execute(
                 text("""
                     SELECT id
-                    FROM unified_purchase_orders
+                    FROM unified_invoices
                     WHERE
                         tenant_id = :tenant_id
                         AND external_id = :external_id
                         AND source = 'xero'
                 """),
                 {
-                    "tenant_id":
-                        tenant_id,
-
+                    "tenant_id": tenant_id,
                     "external_id":
-                        transformed_po.get(
+                        transformed_invoice[
                             "external_id"
-                        )
+                        ]
                 }
             ).fetchone()
 
-            if existing_po:
+            print(
+                "SYNCING:",
+                invoice.get("InvoiceNumber"),
+                invoice.get("Type"),
+                invoice.get("Status")
+            )
+
+            if existing_invoice:
                 continue
 
             db.execute(
                 text("""
-                    INSERT INTO
-                    unified_purchase_orders
+                    INSERT INTO unified_invoices
                     (
                         tenant_id,
                         user_id,
                         source,
+                        origin_system,
                         external_id,
-                        po_number,
-                        supplier_name,
-                        order_date,
-                        delivery_date,
+                        invoice_number,
+                        customer_name,
+                        invoice_date,
+                        due_date,
+                        subtotal,
+                        tax_amount,
                         total_amount,
-                        status,
-                        canonical_key,
-                        created_at
+                        currency,
+                        status
                     )
                     VALUES
                     (
                         :tenant_id,
                         :user_id,
                         :source,
+                        :origin_system,
                         :external_id,
-                        :po_number,
-                        :supplier_name,
-                        :order_date,
-                        :delivery_date,
+                        :invoice_number,
+                        :customer_name,
+                        :invoice_date,
+                        :due_date,
+                        :subtotal,
+                        :tax_amount,
                         :total_amount,
-                        :status,
-                        :canonical_key,
-                        NOW()
+                        :currency,
+                        :status
                     )
                 """),
                 {
-                    "tenant_id":
-                        tenant_id,
+                    "user_id": user_id,
 
-                    "user_id":
-                        user_id,
+                    "tenant_id": tenant_id,
 
-                    "source":
-                        "xero",
+                    "source": "xero",
+
+                    "origin_system": "xero",
 
                     "external_id":
-                        transformed_po.get(
+                        transformed_invoice.get(
                             "external_id"
                         ),
 
-                    "po_number":
-                        transformed_po.get(
-                            "po_number"
+                    "invoice_number":
+                        transformed_invoice.get(
+                            "invoice_number"
                         ),
 
-                    "supplier_name":
-                        transformed_po.get(
-                            "supplier_name"
+                    "customer_name":
+                        transformed_invoice.get(
+                            "customer_name"
                         ),
 
-                    "order_date":
-                        transformed_po.get(
-                            "order_date"
+                    "invoice_date":
+                        transformed_invoice.get(
+                            "invoice_date"
                         ),
 
-                    "delivery_date":
-                        transformed_po.get(
-                            "delivery_date"
+                    "due_date":
+                        transformed_invoice.get(
+                            "due_date"
+                        ),
+
+                    "subtotal":
+                        transformed_invoice.get(
+                            "subtotal"
+                        ),
+
+                    "tax_amount":
+                        transformed_invoice.get(
+                            "tax_amount"
                         ),
 
                     "total_amount":
-                        transformed_po.get(
+                        transformed_invoice.get(
                             "total_amount"
                         ),
 
-                    "status":
-                        transformed_po.get(
-                            "status"
+                    "currency":
+                        transformed_invoice.get(
+                            "currency"
                         ),
 
-                    "canonical_key":
-                        transformed_po.get(
-                            "po_number"
+                    "status":
+                        transformed_invoice.get(
+                            "status"
                         )
                 }
             )
 
             print(
-                "PURCHASE ORDER:",
-                transformed_po.get(
-                    "po_number"
-                )
+                "INVOICE:",
+                invoice.get("InvoiceNumber")
             )
 
             print(
                 "LINE ITEMS COUNT:",
                 len(
-                    po.get(
+                    invoice.get(
                         "LineItems",
                         []
                     )
                 )
             )
 
-            for line_item in po.get(
+            print(
+                "LINE ITEMS:",
+                invoice.get(
+                    "LineItems",
+                    []
+                )
+            )
+
+            for line_item in invoice.get(
                 "LineItems",
                 []
             ):
 
                 transformed_item = (
-                    transform_purchase_order_item_using_mapping(
+                    transform_invoice_item_using_mapping(
                         line_item,
-                        transformed_po.get(
+                        transformed_invoice[
                             "external_id"
-                        ),
-                        po_item_mapping
+                        ],
+                        invoice_item_mapping
                     )
+                )
+
+                print(
+                    "INVOICE ITEM DATA:",
+                    transformed_item
                 )
 
                 db.execute(
                     text("""
-                        INSERT INTO
-                        unified_purchase_order_items
+                        INSERT INTO unified_invoice_items
                         (
                             tenant_id,
                             user_id,
                             source,
-                            po_external_id,
+                            invoice_external_id,
                             item_external_id,
                             item_code,
                             item_name,
@@ -228,7 +270,7 @@ def sync_xero_purchase_orders_service(
                             :tenant_id,
                             :user_id,
                             :source,
-                            :po_external_id,
+                            :invoice_external_id,
                             :item_external_id,
                             :item_code,
                             :item_name,
@@ -238,18 +280,15 @@ def sync_xero_purchase_orders_service(
                         )
                     """),
                     {
-                        "tenant_id":
-                            tenant_id,
+                        "user_id": user_id,
 
-                        "user_id":
-                            user_id,
+                        "tenant_id": tenant_id,
 
-                        "source":
-                            "xero",
+                        "source": "xero",
 
-                        "po_external_id":
+                        "invoice_external_id":
                             transformed_item.get(
-                                "po_external_id"
+                                "invoice_external_id"
                             ),
 
                         "item_external_id":
@@ -284,24 +323,16 @@ def sync_xero_purchase_orders_service(
                     }
                 )
 
-            synced.append(
-                transformed_po
-            )
-
         db.commit()
 
         return {
-
             "message":
-                "Purchase Orders synced successfully",
-
+                "Invoices synced successfully",
             "total_synced":
                 len(synced),
-
-            "purchase_orders":
+            "invoices":
                 synced
         }
 
     finally:
-
         db.close()

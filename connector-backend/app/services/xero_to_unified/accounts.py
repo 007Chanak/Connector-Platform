@@ -4,48 +4,17 @@ import requests
 from sqlalchemy import text
 from app.database import SessionLocal
 
-from app.services.xero_auth_service import (
-    refresh_xero_token
+from app.services.xero_fetch_service import (
+    fetch_complete_xero_accounts
 )
 
+from app.services.mapping_service import (
+    get_mapping_dict
+)
 
-def transform_xero_account(account):
-
-    return {
-
-        "account_id":
-            account.get("AccountID"),
-
-        "canonical_key":
-            account.get("Code")
-            or
-            account.get("Name"),
-
-        "account_code":
-            account.get("Code"),
-
-        "account_name":
-            account.get("Name"),
-
-        "account_type":
-            account.get("Type"),
-
-        "account_class":
-            account.get("Class"),
-
-        "description":
-            account.get("Description"),
-
-        "status":
-            account.get("Status"),
-
-        "source":
-            "xero",
-
-        "raw_data":
-            json.dumps(account)
-    }
-
+from app.services.xero_to_unified.transformer import (
+    transform_account_using_mapping
+)
 
 def sync_xero_accounts_service(
     user_id,
@@ -56,107 +25,31 @@ def sync_xero_accounts_service(
 
     try:
 
-        tenant_id = db.execute(
-            text("""
-                SELECT tenant_id
-                FROM users
-                WHERE id = :user_id
-            """),
-            {
-                "user_id": user_id
-            }
-        ).scalar()
-
-        integration = db.execute(
-            text("""
-                SELECT *
-                FROM integrations
-                WHERE
-                    tenant_id_fk = :tenant_id
-                    AND provider = 'xero'
-                ORDER BY id DESC
-                LIMIT 1
-            """),
-            {
-                "tenant_id":
-                    tenant_id
-            }
-        ).fetchone()
-
-        if not integration:
-
-            return {
-                "error":
-                    "No Xero integration found"
-            }
-
-        access_token = (
-            integration.access_token
+        accounts = (
+            fetch_complete_xero_accounts(
+                user_id,
+                tenant_id
+            )
         )
 
-        xero_tenant_id = (
-            integration.tenant_id
-        )
-
-        url = (
-            "https://api.xero.com/api.xro/2.0/Accounts"
-        )
-
-        headers = {
-            "Authorization":
-                f"Bearer {access_token}",
-
-            "Xero-tenant-id":
-                xero_tenant_id,
-
-            "Accept":
-                "application/json"
-        }
-
-        response = requests.get(
-            url,
-            headers=headers
-        )
-
-        data = response.json()
-
-        if response.status_code == 401:
-
-            refreshed = refresh_xero_token(
-                integration.id
-            )
-
-            access_token = (
-                refreshed["access_token"]
-            )
-
-            headers["Authorization"] = (
-                f"Bearer {access_token}"
-            )
-
-            response = requests.get(
-                url,
-                headers=headers
-            )
-
-            data = response.json()
-
-        accounts = data.get(
-            "Accounts",
-            []
+        mapping = get_mapping_dict(
+            tenant_id=tenant_id,
+            entity_type="accounts",
+            source_system="xero"
         )
 
         synced = []
 
         for account in accounts:
 
-            transformed = (
-                transform_xero_account(
-                    account
+            transformed_account = (
+                transform_account_using_mapping(
+                    account,
+                    mapping
                 )
             )
 
-            existing = db.execute(
+            existing_account = db.execute(
                 text("""
                     SELECT id
                     FROM unified_accounts
@@ -170,172 +63,111 @@ def sync_xero_accounts_service(
                         tenant_id,
 
                     "account_id":
-                        transformed[
+                        transformed_account[
                             "account_id"
                         ]
                 }
             ).fetchone()
 
-            if existing:
+            if existing_account:
+                continue
 
-                db.execute(
-                    text("""
-                        UPDATE unified_accounts
-                        SET
-                            canonical_key = :canonical_key,
-                            account_code = :account_code,
-                            account_name = :account_name,
-                            account_type = :account_type,
-                            account_class = :account_class,
-                            description = :description,
-                            status = :status,
-                            raw_data = CAST(:raw_data AS JSONB)
-                        WHERE id = :id
-                    """),
-                    {
-                        "id":
-                            existing.id,
+            db.execute(
+                text("""
+                    INSERT INTO unified_accounts
+                    (
+                        tenant_id,
+                        source,
+                        account_id,
+                        account_code,
+                        account_name,
+                        account_type,
+                        account_class,
+                        description,
+                        status,
+                        canonical_key,
+                        raw_data,
+                        created_at
+                    )
+                    VALUES
+                    (
+                        :tenant_id,
+                        :source,
+                        :account_id,
+                        :account_code,
+                        :account_name,
+                        :account_type,
+                        :account_class,
+                        :description,
+                        :status,
+                        :canonical_key,
+                        CAST(:raw_data AS jsonb),
+                        NOW()
+                    )
+                """),
+                {
+                    "tenant_id":
+                        tenant_id,
 
-                        "canonical_key":
-                            transformed[
-                                "canonical_key"
-                            ],
+                    "source":
+                        "xero",
 
-                        "account_code":
-                            transformed[
-                                "account_code"
-                            ],
+                    "account_id":
+                        transformed_account.get(
+                            "account_id"
+                        ),
 
-                        "account_name":
-                            transformed[
-                                "account_name"
-                            ],
+                    "account_code":
+                        transformed_account.get(
+                            "account_code"
+                        ),
 
-                        "account_type":
-                            transformed[
-                                "account_type"
-                            ],
+                    "account_name":
+                        transformed_account.get(
+                            "account_name"
+                        ),
 
-                        "account_class":
-                            transformed[
-                                "account_class"
-                            ],
+                    "account_type":
+                        transformed_account.get(
+                            "account_type"
+                        ),
 
-                        "description":
-                            transformed[
-                                "description"
-                            ],
+                    "account_class":
+                        transformed_account.get(
+                            "account_class"
+                        ),
 
-                        "status":
-                            transformed[
-                                "status"
-                            ],
+                    "description":
+                        transformed_account.get(
+                            "description"
+                        ),
 
-                        "raw_data":
-                            transformed[
-                                "raw_data"
-                            ]
-                    }
-                )
+                    "status":
+                        transformed_account.get(
+                            "status"
+                        ),
 
-            else:
+                    "canonical_key":
+                        transformed_account.get(
+                            "account_code"
+                        ),
 
-                db.execute(
-                    text("""
-                        INSERT INTO unified_accounts
-                        (
-                            tenant_id,
-                            source,
-                            account_id,
-                            canonical_key,
-                            account_code,
-                            account_name,
-                            account_type,
-                            account_class,
-                            description,
-                            status,
-                            raw_data
+                    "raw_data":
+                        json.dumps(
+                            account
                         )
-                        VALUES
-                        (
-                            :tenant_id,
-                            :source,
-                            :account_id,
-                            :canonical_key,
-                            :account_code,
-                            :account_name,
-                            :account_type,
-                            :account_class,
-                            :description,
-                            :status,
-                            CAST(:raw_data AS JSONB)
-                        )
-                    """),
-                    {
-                        "tenant_id":
-                            tenant_id,
-
-                        "source":
-                            transformed[
-                                "source"
-                            ],
-
-                        "account_id":
-                            transformed[
-                                "account_id"
-                            ],
-
-                        "canonical_key":
-                            transformed[
-                                "canonical_key"
-                            ],
-
-                        "account_code":
-                            transformed[
-                                "account_code"
-                            ],
-
-                        "account_name":
-                            transformed[
-                                "account_name"
-                            ],
-
-                        "account_type":
-                            transformed[
-                                "account_type"
-                            ],
-
-                        "account_class":
-                            transformed[
-                                "account_class"
-                            ],
-
-                        "description":
-                            transformed[
-                                "description"
-                            ],
-
-                        "status":
-                            transformed[
-                                "status"
-                            ],
-
-                        "raw_data":
-                            transformed[
-                                "raw_data"
-                            ]
-                    }
-                )
+                }
+            )
 
             synced.append(
-                transformed
+                transformed_account
             )
 
         db.commit()
 
         return {
             "message":
-                "Xero Accounts synced successfully",
+                "Accounts synced successfully",
 
             "total_synced":
                 len(synced),

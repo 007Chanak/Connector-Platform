@@ -5,11 +5,11 @@ from app.dependencies.auth import get_current_user
 
 
 from app.services.erpnext_item_service import (
-    fetch_erpnext_items
+    fetch_erpnext_complete_items
 )
 
-from app.transformations.item_transform import (
-    transform_erpnext_item
+from app.services.erpnext_to_unified.transformer import (
+    transform_erpnext_item_using_mapping
 )
 
 
@@ -18,7 +18,7 @@ def sync_erpnext_items_service(user_id,tenant_id):
     db = SessionLocal()
     try:
 
-        items = fetch_erpnext_items(
+        items = fetch_erpnext_complete_items(
             user_id, tenant_id
         )
 
@@ -27,7 +27,7 @@ def sync_erpnext_items_service(user_id,tenant_id):
         for item in items:
 
             transformed_item = (
-                transform_erpnext_item(item)
+                transform_erpnext_item_using_mapping(item)
             )
 
             tenant_id = db.execute(

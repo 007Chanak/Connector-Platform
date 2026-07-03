@@ -5,10 +5,6 @@ from app.dependencies.auth import (
     get_current_user
 )
 
-from app.services.erpnext_service import (
-    push_customers_to_erpnext
-)
-
 from app.services.erpnext_to_xero_sync import (
     sync_erpnext_to_xero
 )
@@ -17,24 +13,28 @@ from app.services.erpnext_invoice_sync_service import (
     sync_erpnext_invoices_service
 )
 
-from app.services.unified_to_erpnext_invoice_service import (
-    push_unified_invoices_to_erpnext
+from app.services.unified_to_erpnext.invoices import (
+    push_invoices_to_erpnext
 )
 
 from app.services.erpnext_item_service import (
-    fetch_erpnext_items
+    fetch_erpnext_complete_items
 )
 
-from app.services.erpnext_item_sync_service import (
+from app.services.erpnext_to_unified.items import (
     sync_erpnext_items_service
 )
 
-from app.services.unified_to_erpnext_item_service import (
+from app.services.unified_to_erpnext.items import (
     push_items_to_erpnext
 )
 
-from app.services.erpnext_customer_sync_service import (
+from app.services.erpnext_to_unified.customers import (
     sync_erpnext_customers_service
+)
+
+from app.services.unified_to_erpnext.customers import (
+    push_customers_to_erpnext
 )
 
 from app.services.erpnext_to_unified.suppliers import (
@@ -50,10 +50,7 @@ from app.services.unified_to_erpnext.suppliers import (
 )
 
 from app.services.erpnext_to_unified.bills import (
-    fetch_complete_erpnext_bills
-)
-
-from app.services.erpnext_to_unified.bills import (
+    fetch_complete_erpnext_bills,
     sync_erpnext_bills_service
 )
 
@@ -237,7 +234,7 @@ def sync_invoices_to_erpnext(
     )
 ):
 
-    return push_unified_invoices_to_erpnext(
+    return push_invoices_to_erpnext(
         current_user.id,
         current_user.tenant_id
     )
@@ -249,7 +246,7 @@ def get_erpnext_items(
     )
 ):
 
-    return fetch_erpnext_items(
+    return fetch_erpnext_complete_items(
         current_user.id,
         current_user.tenant_id
     )

@@ -10,6 +10,7 @@ def push_unified_suppliers_to_xero(
 ):
 
     db = SessionLocal()
+
     try:
 
         app_tenant_id = db.execute(
@@ -23,6 +24,10 @@ def push_unified_suppliers_to_xero(
             }
         ).scalar()
 
+        print("=" * 80)
+        print("PUSHING UNIFIED SUPPLIERS TO XERO")
+        print("=" * 80)
+
         suppliers = db.execute(
             text("""
                 SELECT *
@@ -32,17 +37,23 @@ def push_unified_suppliers_to_xero(
                     AND source = 'erpnext'
             """),
             {
-                "tenant_id": app_tenant_id,
+                "tenant_id": app_tenant_id
             }
         ).fetchall()
 
-        synced = []
+        print("SUPPLIERS FOUND:", len(suppliers))
 
+        synced = []
         skipped = []
 
         for supplier in suppliers:
 
-            # Check if customer already exists in Xero
+            print()
+            print("=" * 80)
+            print("PROCESSING SUPPLIER")
+            print(supplier.supplier_name)
+            print("=" * 80)
+
             existing_response = push_supplier_exists_check(
                 access_token,
                 tenant_id,
@@ -51,42 +62,57 @@ def push_unified_suppliers_to_xero(
 
             if existing_response:
 
+                print(
+                    "SKIPPED - ALREADY EXISTS:",
+                    supplier.supplier_name
+                )
+
                 skipped.append(
                     supplier.supplier_name
                 )
 
                 continue
 
+            supplier_payload = {
+                "supplier_name":
+                    supplier.supplier_name,
+
+                "contact_name":
+                    supplier.contact_name,
+
+                "email":
+                    supplier.email,
+
+                "phone":
+                    supplier.phone,
+
+                "address":
+                    supplier.address,
+
+                "postal_code":
+                    supplier.postal_code,
+
+                "tax_number":
+                    supplier.tax_number,
+
+                "city":
+                    supplier.city,
+
+                "state":
+                    supplier.state,
+
+                "country":
+                    supplier.country
+            }
+
+            print("UNIFIED SUPPLIER:")
+            print(supplier_payload)
+
             response = push_supplier_to_xero(
                 access_token,
                 tenant_id,
-                {
-                    "supplier_name":
-                        supplier.supplier_name,
-
-                    "contact_name":
-                        supplier.contact_name,
-
-                    "email":
-                        supplier.email,
-
-                    "phone":
-                        supplier.phone,
-
-                    "address":
-                        supplier.address,
-
-                    "postal_code":
-                        supplier.postal_code,
-
-                    "tax_number":
-                        supplier.tax_number
-                }
+                supplier_payload
             )
-
-            print("SUPPLIER:", supplier.supplier_name)
-            print("CONTACT:", supplier.contact_name)
-            print("XERO RESPONSE:", response)
 
             synced.append(
                 {
@@ -97,6 +123,13 @@ def push_unified_suppliers_to_xero(
                         response
                 }
             )
+
+        print()
+        print("=" * 80)
+        print("SUPPLIER PUSH COMPLETE")
+        print("TOTAL SYNCED:", len(synced))
+        print("TOTAL SKIPPED:", len(skipped))
+        print("=" * 80)
 
         return {
             "message":
@@ -114,7 +147,9 @@ def push_unified_suppliers_to_xero(
             "skipped_suppliers":
                 skipped
         }
+
     finally:
+
         db.close()
 
 
@@ -123,6 +158,7 @@ def push_supplier_exists_check(
     tenant_id,
     supplier_name
 ):
+
     url = (
         "https://api.xero.com/api.xro/2.0/Contacts"
     )
@@ -143,6 +179,11 @@ def push_supplier_exists_check(
         headers=headers
     )
 
+    print(
+        "SUPPLIER EXISTS STATUS:",
+        response.status_code
+    )
+
     if response.status_code != 200:
         return False
 
@@ -161,9 +202,16 @@ def push_supplier_exists_check(
             ==
             supplier_name.strip().lower()
         ):
+
+            print(
+                "SUPPLIER EXISTS IN XERO:",
+                supplier_name
+            )
+
             return True
 
     return False
+
 
 def push_supplier_to_xero(
     access_token,
@@ -171,74 +219,137 @@ def push_supplier_to_xero(
     supplier
 ):
 
-    url = "https://api.xero.com/api.xro/2.0/Contacts"
+    url = (
+        "https://api.xero.com/api.xro/2.0/Contacts"
+    )
 
     headers = {
-        "Authorization": f"Bearer {access_token}",
-        "Xero-tenant-id": tenant_id,
-        "Accept": "application/json",
-        "Content-Type": "application/json"
+        "Authorization":
+            f"Bearer {access_token}",
+
+        "Xero-tenant-id":
+            tenant_id,
+
+        "Accept":
+            "application/json",
+
+        "Content-Type":
+            "application/json"
     }
+
+    contact_name = (
+        supplier.get(
+            "contact_name"
+        )
+        or ""
+    ).strip()
+
+    first_name = ""
+    last_name = ""
+
+    if contact_name:
+
+        parts = contact_name.split()
+
+        first_name = parts[0]
+
+        if len(parts) > 1:
+
+            last_name = " ".join(
+                parts[1:]
+            )
 
     payload = {
         "Contacts": [
             {
-                "Name": supplier.get("supplier_name"),
+                "Name":
+                    supplier.get(
+                        "supplier_name"
+                    ),
 
-                "IsSupplier": True,
+                "IsSupplier":
+                    True,
 
-                "EmailAddress": supplier.get("email", ""),
+                "EmailAddress":
+                    supplier.get(
+                        "email",
+                        ""
+                    ),
 
                 "ContactPersons": [
                     {
-                        "FirstName": (
-                            supplier.get("contact_name", "").split(" ")[0]
-                            if supplier.get("contact_name")
-                            else ""
-                        ),
-                        "LastName": (
-                            " ".join(
-                                supplier.get("contact_name", "").split(" ")[1:]
-                            )
-                            if supplier.get("contact_name")
-                            else ""
-                        )
+                        "FirstName":
+                            first_name,
+
+                        "LastName":
+                            last_name
                     }
                 ],
 
                 "Phones": [
                     {
-                        "PhoneType": "DEFAULT",
-                        "PhoneNumber": supplier.get("phone", "")
+                        "PhoneType":
+                            "DEFAULT",
+
+                        "PhoneNumber":
+                            supplier.get(
+                                "phone",
+                                ""
+                            )
                     }
                 ],
 
                 "Addresses": [
                     {
-                        "AddressType": "POBOX",
+                        "AddressType":
+                            "POBOX",
 
                         "AddressLine1":
-                            supplier.get("address", ""),
+                            supplier.get(
+                                "address",
+                                ""
+                            ),
+
+                        "City":
+                            supplier.get(
+                                "city",
+                                ""
+                            ),
+
+                        "Region":
+                            supplier.get(
+                                "state",
+                                ""
+                            ),
+
+                        "Country":
+                            supplier.get(
+                                "country",
+                                ""
+                            ),
 
                         "PostalCode":
-                            supplier.get("postal_code", "")
+                            supplier.get(
+                                "postal_code",
+                                ""
+                            )
                     }
                 ],
 
-                "TaxNumber": supplier.get("tax_number", "")
+                "TaxNumber":
+                    supplier.get(
+                        "tax_number",
+                        ""
+                    )
             }
         ]
     }
 
-    print(
-        "XERO SUPPLIER:",
-        supplier
-    )
-
-    print(
-        "XERO PAYLOAD:",
-        payload
-    )
+    print()
+    print("=" * 80)
+    print("XERO SUPPLIER PAYLOAD")
+    print(payload)
+    print("=" * 80)
 
     response = requests.post(
         url,
@@ -246,6 +357,20 @@ def push_supplier_to_xero(
         json=payload
     )
 
-    print("XERO RESPONSE:", response.json())
+    try:
 
-    return response.json()
+        response_json = response.json()
+
+    except Exception:
+
+        response_json = response.text
+
+    print()
+    print("=" * 80)
+    print("XERO RESPONSE STATUS")
+    print(response.status_code)
+    print("XERO RESPONSE BODY")
+    print(response_json)
+    print("=" * 80)
+
+    return response_json

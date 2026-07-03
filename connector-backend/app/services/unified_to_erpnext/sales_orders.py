@@ -1,6 +1,38 @@
 import requests
+
 from sqlalchemy import text
+from decimal import Decimal
+from datetime import date, datetime
+
 from app.database import SessionLocal
+
+from app.services.mapping_service import (
+    get_target_mapping_dict,
+    build_payload_from_mapping
+)
+
+
+def make_json_safe(obj):
+
+    if isinstance(obj, Decimal):
+        return float(obj)
+
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+
+    if isinstance(obj, dict):
+        return {
+            k: make_json_safe(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, list):
+        return [
+            make_json_safe(v)
+            for v in obj
+        ]
+
+    return obj
 
 
 def push_sales_orders_to_erpnext(
@@ -43,6 +75,32 @@ def push_sales_orders_to_erpnext(
                     "No ERPNext integration found"
             }
 
+        sales_order_mapping = (
+            get_target_mapping_dict(
+                tenant_id=tenant_id,
+                entity_type="sales_orders",
+                target_system="erpnext"
+            )
+        )
+
+        sales_order_item_mapping = (
+            get_target_mapping_dict(
+                tenant_id=tenant_id,
+                entity_type="sales_order_items",
+                target_system="erpnext"
+            )
+        )
+
+        print("=" * 80)
+        print("SALES ORDER TARGET MAPPING")
+        print(sales_order_mapping)
+        print("=" * 80)
+
+        print("=" * 80)
+        print("SALES ORDER ITEM TARGET MAPPING")
+        print(sales_order_item_mapping)
+        print("=" * 80)
+
         sales_orders = db.execute(
             text("""
                 SELECT *
@@ -56,18 +114,29 @@ def push_sales_orders_to_erpnext(
             }
         ).fetchall()
 
-        results = []
+        print("=" * 80)
+        print("SALES ORDERS FOUND")
+        print(len(sales_orders))
+        print("=" * 80)
 
-        processed_sos = set()
+        headers = {
+
+            "Authorization":
+                f"token {erp.api_key}:{erp.api_secret}",
+
+            "Content-Type":
+                "application/json"
+        }
+
+        results = []
 
         for so in sales_orders:
 
-            if so.so_number in processed_sos:
-                continue
-
-            processed_sos.add(
-                so.so_number
-            )
+            print("\n")
+            print("=" * 80)
+            print("PROCESSING SALES ORDER")
+            print(so.so_number)
+            print("=" * 80)
 
             existing_migration = db.execute(
                 text("""
@@ -88,6 +157,11 @@ def push_sales_orders_to_erpnext(
                 }
             ).fetchone()
 
+            print(
+                "MIGRATION CHECK:",
+                existing_migration
+            )
+
             if existing_migration:
 
                 results.append(
@@ -102,42 +176,90 @@ def push_sales_orders_to_erpnext(
 
                 continue
 
-            so_rows = db.execute(
+            customer_check = requests.get(
+                f"{erp.erp_url}/api/resource/Customer/{so.customer_name}",
+                headers=headers
+            )
+
+            print(
+                "CUSTOMER CHECK:",
+                customer_check.status_code
+            )
+
+            if customer_check.status_code != 200:
+
+                print(
+                    "CUSTOMER NOT FOUND:",
+                    so.customer_name
+                )
+
+                results.append(
+                    {
+                        "so_number":
+                            so.so_number,
+
+                        "customer":
+                            so.customer_name,
+
+                        "status":
+                            "Skipped - Customer Not Found"
+                    }
+                )
+
+                continue
+
+            header_payload = (
+                build_payload_from_mapping(
+                    so,
+                    sales_order_mapping
+                )
+            )
+
+            print("=" * 80)
+            print("HEADER PAYLOAD")
+            print(header_payload)
+            print("=" * 80)
+
+            item_rows = db.execute(
                 text("""
                     SELECT *
-                    FROM unified_sales_orders
+                    FROM unified_sales_order_items
                     WHERE
                         tenant_id = :tenant_id
-                        AND so_number = :so_number
+                        AND so_external_id = :so_external_id
                 """),
                 {
                     "tenant_id":
                         tenant_id,
 
-                    "so_number":
-                        so.so_number
+                    "so_external_id":
+                        so.external_id
                 }
             ).fetchall()
 
-            items = []
+            print(
+                "ITEMS FOUND:",
+                len(item_rows)
+            )
 
-            for row in so_rows:
+            sales_items = []
 
-                items.append(
-                    {
-                        "item_code":
-                            row.item_code,
+            for item_row in item_rows:
 
-                        "qty":
-                            float(row.quantity)
-                            if row.quantity
-                            else 1,
+                item_payload = (
+                    build_payload_from_mapping(
+                        item_row,
+                        sales_order_item_mapping
+                    )
+                )
 
-                        "rate":
-                            float(row.unit_price)
-                            if row.unit_price
-                            else 0
-                    }
+                print(
+                    "ITEM PAYLOAD:",
+                    item_payload
+                )
+
+                sales_items.append(
+                    item_payload
                 )
 
             payload = {
@@ -146,22 +268,27 @@ def push_sales_orders_to_erpnext(
                     so.customer_name,
 
                 "transaction_date":
-                    str(so.order_date),
+                    str(
+                        so.order_date
+                    ),
 
                 "delivery_date":
-                    str(so.delivery_date),
+                    str(
+                        so.delivery_date
+                    ),
 
                 "items":
-                    items
+                    sales_items
             }
 
-            headers = {
-                "Authorization":
-                    f"token {erp.api_key}:{erp.api_secret}",
+            payload = make_json_safe(
+                payload
+            )
 
-                "Content-Type":
-                    "application/json"
-            }
+            print("=" * 80)
+            print("FINAL SALES ORDER PAYLOAD")
+            print(payload)
+            print("=" * 80)
 
             response = requests.post(
                 f"{erp.erp_url}/api/resource/Sales Order",
@@ -169,22 +296,24 @@ def push_sales_orders_to_erpnext(
                 headers=headers
             )
 
-            try:
-                response_json = response.json()
-            except Exception:
-                response_json = response.text
+            print("=" * 80)
+            print("ERP RESPONSE STATUS")
+            print(response.status_code)
+            print("=" * 80)
 
-            print(
-                "SO:",
-                so.so_number
-            )
+            print("=" * 80)
+            print("ERP RESPONSE BODY")
+            print(response.text)
+            print("=" * 80)
 
-            print(
-                "ERP RESPONSE:",
-                response_json
-            )
+            if response.status_code in [
+                200,
+                201
+            ]:
 
-            if response.status_code in [200, 201]:
+                print(
+                    "MIGRATION SUCCESS"
+                )
 
                 db.execute(
                     text("""
@@ -225,20 +354,48 @@ def push_sales_orders_to_erpnext(
 
                 db.commit()
 
+            else:
+
+                print(
+                    "MIGRATION FAILED"
+                )
+
+            try:
+
+                response_data = (
+                    response.json()
+                )
+
+            except Exception:
+
+                response_data = (
+                    response.text
+                )
+
             results.append(
                 {
                     "so_number":
                         so.so_number,
 
+                    "customer":
+                        so.customer_name,
+
                     "status_code":
                         response.status_code,
 
                     "response":
-                        response_json
+                        response_data
                 }
             )
+
+        print("\n")
+        print("=" * 80)
+        print("FINAL RESULTS")
+        print(results)
+        print("=" * 80)
 
         return results
 
     finally:
+
         db.close()

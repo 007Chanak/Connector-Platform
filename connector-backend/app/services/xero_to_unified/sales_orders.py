@@ -1,34 +1,19 @@
-import requests
 from sqlalchemy import text
+
 from app.database import SessionLocal
-from app.services.xero_auth_service import (
-    refresh_xero_token
+
+from app.services.xero_fetch_service import (
+    fetch_complete_xero_sales_orders
 )
 
+from app.services.mapping_service import (
+    get_mapping_dict
+)
 
-def fetch_xero_sales_orders(
-    access_token,
-    tenant_id
-):
-
-    response = requests.get(
-        "https://api.xero.com/api.xro/2.0/Quotes",
-        headers={
-            "Authorization":
-                f"Bearer {access_token}",
-
-            "Xero-tenant-id":
-                tenant_id,
-
-            "Accept":
-                "application/json"
-        }
-    )
-
-    return response.json().get(
-        "Quotes",
-        []
-    )
+from app.services.xero_to_unified.transformer import (
+    transform_sales_order_using_mapping,
+    transform_sales_order_item_using_mapping
+)
 
 
 def sync_xero_sales_orders_service(
@@ -40,180 +25,251 @@ def sync_xero_sales_orders_service(
 
     try:
 
-        integration = db.execute(
-            text("""
-                SELECT *
-                FROM integrations
-                WHERE
-                    provider = 'xero'
-                    AND tenant_id_fk = :tenant_id
-                ORDER BY id DESC
-                LIMIT 1
-            """),
-            {
-                "tenant_id":
-                    tenant_id
-            }
-        ).fetchone()
-
-        if not integration:
-
-            return {
-                "error":
-                    "No Xero integration found"
-            }
-
-        refresh_xero_token(
-            integration.id
-        )
-
-        integration = db.execute(
-            text("""
-                SELECT *
-                FROM integrations
-                WHERE id = :id
-            """),
-            {
-                "id":
-                    integration.id
-            }
-        ).fetchone()
-
         sales_orders = (
-            fetch_xero_sales_orders(
-                integration.access_token,
-                integration.tenant_id
+            fetch_complete_xero_sales_orders(
+                user_id,
+                tenant_id
             )
         )
 
-        inserted = 0
+        sales_order_mapping = get_mapping_dict(
+            tenant_id=tenant_id,
+            entity_type="sales_orders",
+            source_system="xero"
+        )
 
-        for quote in sales_orders:
+        sales_order_item_mapping = get_mapping_dict(
+            tenant_id=tenant_id,
+            entity_type="sales_order_items",
+            source_system="xero"
+        )
 
-            if quote.get("Status") == "DELETED":
+        synced = []
+
+        tenant_id = db.execute(
+            text("""
+                SELECT tenant_id
+                FROM users
+                WHERE id = :user_id
+            """),
+            {
+                "user_id": user_id
+            }
+        ).scalar()
+
+        valid_statuses = [
+            "DRAFT",
+            "SENT",
+            "ACCEPTED",
+            "INVOICED"
+        ]
+
+        for sales_order in sales_orders:
+
+            if sales_order.get(
+                "Status"
+            ) not in valid_statuses:
                 continue
 
-            for item in quote.get(
+            transformed_so = (
+                transform_sales_order_using_mapping(
+                    sales_order,
+                    sales_order_mapping
+                )
+            )
+
+            print("=" * 80)
+            print("SALES ORDER")
+            print(transformed_so)
+            print("=" * 80)
+
+            existing_so = db.execute(
+                text("""
+                    SELECT id
+                    FROM unified_sales_orders
+                    WHERE
+                        tenant_id = :tenant_id
+                        AND external_id = :external_id
+                        AND source = 'xero'
+                """),
+                {
+                    "tenant_id": tenant_id,
+                    "external_id":
+                        transformed_so[
+                            "external_id"
+                        ]
+                }
+            ).fetchone()
+
+            if existing_so:
+                continue
+
+            db.execute(
+                text("""
+                    INSERT INTO
+                    unified_sales_orders
+                    (
+                        tenant_id,
+                        user_id,
+                        source,
+                        external_id,
+                        so_number,
+                        customer_name,
+                        order_date,
+                        delivery_date,
+                        total_amount,
+                        status,
+                        canonical_key,
+                        created_at
+                    )
+                    VALUES
+                    (
+                        :tenant_id,
+                        :user_id,
+                        :source,
+                        :external_id,
+                        :so_number,
+                        :customer_name,
+                        :order_date,
+                        :delivery_date,
+                        :total_amount,
+                        :status,
+                        :canonical_key,
+                        NOW()
+                    )
+                """),
+                {
+                    "tenant_id":
+                        tenant_id,
+
+                    "user_id":
+                        user_id,
+
+                    "source":
+                        "xero",
+
+                    "external_id":
+                        transformed_so.get(
+                            "external_id"
+                        ),
+
+                    "so_number":
+                        transformed_so.get(
+                            "so_number"
+                        ),
+
+                    "customer_name":
+                        transformed_so.get(
+                            "customer_name"
+                        ),
+
+                    "order_date":
+                        transformed_so.get(
+                            "order_date"
+                        ),
+
+                    "delivery_date":
+                        transformed_so.get(
+                            "delivery_date"
+                        ),
+
+                    "total_amount":
+                        transformed_so.get(
+                            "total_amount"
+                        ),
+
+                    "status":
+                        transformed_so.get(
+                            "status"
+                        ),
+
+                    "canonical_key":
+                        transformed_so.get(
+                            "so_number"
+                        )
+                }
+            )
+
+            for line_item in sales_order.get(
                 "LineItems",
                 []
             ):
 
-                existing_so = db.execute(
-                    text("""
-                        SELECT id
-                        FROM unified_sales_orders
-                        WHERE
-                            tenant_id = :tenant_id
-                            AND source = 'xero'
-                            AND canonical_key = :canonical_key
-                            AND item_code = :item_code
-                    """),
-                    {
-                        "tenant_id":
-                            tenant_id,
-
-                        "canonical_key":
-                            quote.get(
-                                "QuoteNumber"
-                            ),
-
-                        "item_code":
-                            item.get(
-                                "ItemCode"
-                            )
-                    }
-                ).fetchone()
-
-                if existing_so:
-                    continue
-
-                item_row = db.execute(
-                    text("""
-                        SELECT item_name
-                        FROM unified_items
-                        WHERE
-                            tenant_id = :tenant_id
-                            AND item_code = :item_code
-                        LIMIT 1
-                    """),
-                    {
-                        "tenant_id": tenant_id,
-                        "item_code": item.get("ItemCode")
-                    }
-                ).fetchone()
-
-                print(
-                    "QUOTE:",
-                    quote.get(
-                        "QuoteNumber"
-                    ),
-                    quote.get(
-                        "Contact",
-                        {}
-                    ).get(
-                        "Name"
-                    ),
-                    quote.get(
-                        "Total"
+                transformed_item = (
+                    transform_sales_order_item_using_mapping(
+                        line_item,
+                        sales_order_item_mapping
                     )
                 )
 
                 print(
-                    "ITEM:",
-                    item.get(
-                        "ItemCode"
-                    ),
-                    item.get(
-                        "Description"
-                    ),
-                    item.get(
-                        "Quantity"
-                    ),
-                    item.get(
-                        "UnitAmount"
-                    )
+                    "SALES ORDER ITEM:"
                 )
+
+                print(
+                    transformed_item
+                )
+
+                item_name = transformed_item.get(
+                    "item_name"
+                )
+
+                if not item_name:
+
+                    item_row = db.execute(
+                        text("""
+                            SELECT item_name
+                            FROM unified_items
+                            WHERE
+                                tenant_id = :tenant_id
+                                AND item_code = :item_code
+                            LIMIT 1
+                        """),
+                        {
+                            "tenant_id":
+                                tenant_id,
+
+                            "item_code":
+                                transformed_item.get(
+                                    "item_code"
+                                )
+                        }
+                    ).fetchone()
+
+                    item_name = (
+                        item_row.item_name
+                        if item_row
+                        else None
+                    )
 
                 db.execute(
                     text("""
                         INSERT INTO
-                        unified_sales_orders
+                        unified_sales_order_items
                         (
                             tenant_id,
                             user_id,
                             source,
-                            external_id,
-                            canonical_key,
-                            so_number,
-                            customer_name,
-                            order_date,
-                            delivery_date,
+                            so_external_id,
+                            item_external_id,
                             item_code,
                             item_name,
                             quantity,
                             unit_price,
-                            line_amount,
-                            total_amount,
-                            status
+                            line_total
                         )
                         VALUES
                         (
                             :tenant_id,
                             :user_id,
                             :source,
-                            :external_id,
-                            :canonical_key,
-                            :so_number,
-                            :customer_name,
-                            :order_date,
-                            :delivery_date,
+                            :so_external_id,
+                            :item_external_id,
                             :item_code,
                             :item_name,
                             :quantity,
                             :unit_price,
-                            :line_amount,
-                            :total_amount,
-                            :status
+                            :line_total
                         )
                     """),
                     {
@@ -226,91 +282,59 @@ def sync_xero_sales_orders_service(
                         "source":
                             "xero",
 
-                        "external_id":
-                            quote.get(
-                                "QuoteID"
+                        "so_external_id":
+                            transformed_so.get(
+                                "external_id"
                             ),
 
-                        "canonical_key":
-                            quote.get(
-                                "QuoteNumber"
+                        "item_external_id":
+                            transformed_item.get(
+                                "item_external_id"
                             ),
-
-                        "so_number":
-                            quote.get(
-                                "QuoteNumber"
-                            ),
-
-                        "customer_name":
-                            quote.get(
-                                "Contact",
-                                {}
-                            ).get(
-                                "Name"
-                            ),
-
-                        "order_date":
-                            quote.get(
-                                "DateString",
-                                ""
-                            )[:10],
-
-                        "delivery_date":
-                            quote.get(
-                                "ExpiryDateString",
-                                ""
-                            )[:10],
 
                         "item_code":
-                            item.get(
-                                "ItemCode"
+                            transformed_item.get(
+                                "item_code"
                             ),
 
                         "item_name":
-                            item_row.item_name
-                            if item_row
-                            else item.get(
-                                "ItemCode"
-                            ),
+                            item_name,
 
                         "quantity":
-                            item.get(
-                                "Quantity"
+                            transformed_item.get(
+                                "quantity"
                             ),
 
                         "unit_price":
-                            item.get(
-                                "UnitAmount"
+                            transformed_item.get(
+                                "unit_price"
                             ),
 
-                        "line_amount":
-                            item.get(
-                                "LineAmount"
-                            ),
-
-                        "total_amount":
-                            quote.get(
-                                "Total"
-                            ),
-
-                        "status":
-                            quote.get(
-                                "Status"
+                        "line_total":
+                            transformed_item.get(
+                                "line_total"
                             )
                     }
                 )
 
-                inserted += 1
+            synced.append(
+                transformed_so
+            )
 
         db.commit()
 
         return {
-            "message":
-                "Xero Sales Orders synced successfully",
 
-            "inserted":
-                inserted
+            "message":
+                "Sales Orders synced successfully",
+
+            "total_synced":
+                len(synced),
+
+            "sales_orders":
+                synced
         }
 
     finally:
+
         db.close()

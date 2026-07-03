@@ -25,23 +25,27 @@ from app.config import (
     XERO_REDIRECT_URI
 )
 
-from app.services.xero_sync_service import (
+from app.services.xero_to_unified.customers import (
     sync_xero_customers_service
+)
+
+from app.services.xero_to_unified.invoices import (
+    sync_xero_invoices_service
 )
 
 from app.services.unified_to_xero_invoice_service import (
     push_unified_invoices_to_xero
 )
 
-from app.services.xero_item_sync_service import (
+from app.services.xero_to_unified.items import (
     sync_xero_items_service
 )
 
-from app.services.unified_to_xero_item_service import (
+from app.services.unified_to_xero.items import (
     push_unified_items_to_xero
 )
 
-from app.services.unified_to_xero_customer_service import (
+from app.services.unified_to_xero.customers import (
     push_unified_customers_to_xero
 )
 
@@ -385,6 +389,18 @@ def get_xero_invoices(
 ):
 
     return fetch_xero_invoices(
+        current_user.id,
+        current_user.tenant_id
+    )
+
+@router.get("/sync/xero/invoices")
+def sync_xero_invoices(
+    current_user=Depends(
+        get_current_user
+    )
+):
+
+    return sync_xero_invoices_service(
         current_user.id,
         current_user.tenant_id
     )

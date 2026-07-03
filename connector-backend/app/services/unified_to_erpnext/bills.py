@@ -4,8 +4,41 @@ from sqlalchemy import text
 
 from app.database import SessionLocal
 
+from app.services.mapping_service import (
+    get_target_mapping_dict,
+    build_payload_from_mapping
+)
 
-def push_bills_to_erpnext(user_id, tenant_id):
+from decimal import Decimal
+from datetime import date, datetime
+
+
+def make_json_safe(obj):
+
+    if isinstance(obj, Decimal):
+        return float(obj)
+
+    if isinstance(obj, (date, datetime)):
+        return obj.isoformat()
+
+    if isinstance(obj, dict):
+        return {
+            k: make_json_safe(v)
+            for k, v in obj.items()
+        }
+
+    if isinstance(obj, list):
+        return [
+            make_json_safe(v)
+            for v in obj
+        ]
+
+    return obj
+
+def push_bills_to_erpnext(
+    user_id,
+    tenant_id
+):
 
     db = SessionLocal()
 
@@ -36,9 +69,29 @@ def push_bills_to_erpnext(user_id, tenant_id):
         ).fetchone()
 
         if not erp:
+
             return {
-                "error": "No ERPNext integration found"
+                "error":
+                    "No ERPNext integration found"
             }
+
+        purchase_invoice_mapping = (
+            get_target_mapping_dict(
+                tenant_id=tenant_id,
+                entity_type="bills",
+                target_system="erpnext",
+                target_doctype="Purchase Invoice"
+            )
+        )
+
+        purchase_invoice_item_mapping = (
+            get_target_mapping_dict(
+                tenant_id=tenant_id,
+                entity_type="bill_items",
+                target_system="erpnext",
+                target_doctype="Purchase Invoice Item"
+            )
+        )
 
         bills = db.execute(
             text("""
@@ -54,11 +107,6 @@ def push_bills_to_erpnext(user_id, tenant_id):
             }
         ).fetchall()
 
-        grouped_bills = defaultdict(list)
-
-        for bill in bills:
-            grouped_bills[bill.bill_number].append(bill)
-
         results = []
 
         headers = {
@@ -68,9 +116,7 @@ def push_bills_to_erpnext(user_id, tenant_id):
                 "application/json"
         }
 
-        for bill_number, bill_rows in grouped_bills.items():
-
-            first_bill = bill_rows[0]
+        for bill in bills:
 
             migration_check = db.execute(
                 text("""
@@ -84,7 +130,7 @@ def push_bills_to_erpnext(user_id, tenant_id):
                 """),
                 {
                     "tenant_id": tenant_id,
-                    "bill_number": bill_number
+                    "bill_number": bill.bill_number
                 }
             ).fetchone()
 
@@ -92,15 +138,17 @@ def push_bills_to_erpnext(user_id, tenant_id):
 
                 results.append(
                     {
-                        "bill_number": bill_number,
-                        "status": "Skipped - Already Migrated"
+                        "bill_number":
+                            bill.bill_number,
+                        "status":
+                            "Skipped - Already Migrated"
                     }
                 )
 
                 continue
 
             supplier_check = requests.get(
-                f"{erp.erp_url}/api/resource/Supplier/{first_bill.supplier_name}",
+                f"{erp.erp_url}/api/resource/Supplier/{bill.supplier_name}",
                 headers=headers
             )
 
@@ -108,80 +156,87 @@ def push_bills_to_erpnext(user_id, tenant_id):
 
                 results.append(
                     {
-                        "bill_number": bill_number,
-                        "supplier": first_bill.supplier_name,
-                        "status": "Skipped - Supplier Not Found"
+                        "bill_number":
+                            bill.bill_number,
+
+                        "supplier":
+                            bill.supplier_name,
+
+                        "status":
+                            "Skipped - Supplier Not Found"
                     }
                 )
 
                 continue
 
+            header_payload = (
+                build_payload_from_mapping(
+                    bill,
+                    purchase_invoice_mapping
+                )
+            )
+
+            item_rows = db.execute(
+                text("""
+                    SELECT *
+                    FROM unified_bill_items
+                    WHERE
+                        tenant_id = :tenant_id
+                        AND bill_external_id = :bill_external_id
+                """),
+                {
+                    "tenant_id":
+                        tenant_id,
+
+                    "bill_external_id":
+                        bill.external_id
+                }
+            ).fetchall()
+
             purchase_items = []
 
-            for row in bill_rows:
+            for item_row in item_rows:
 
-                purchase_items.append(
-                    {
-                        "item_code":
-                            row.item_code
-                            if row.item_code
-                            else "TEST-001",
-
-                        "qty":
-                            float(row.quantity)
-                            if row.quantity
-                            else 1,
-
-                        "rate":
-                            float(row.unit_price)
-                            if row.unit_price
-                            else 0
-                    }
+                item_payload = (
+                    build_payload_from_mapping(
+                        item_row,
+                        purchase_invoice_item_mapping
+                    )
                 )
 
-            if not purchase_items:
+                purchase_items.append(
+                    item_payload
+                )
 
-                purchase_items = [
-                    {
-                        "item_code": "TEST-001",
-                        "qty": 1,
-                        "rate":
-                            float(first_bill.total_amount)
-                            if first_bill.total_amount
-                            else 0
-                    }
-                ]
+            header_payload["items"] = (
+                purchase_items
+            )
 
-            payload = {
-                "supplier":
-                    first_bill.supplier_name,
+            header_payload.pop("status",None)
 
-                "bill_no":
-                    first_bill.bill_number,
+            header_payload = make_json_safe(header_payload)
 
-                "set_posting_time":
-                    1,
-
-                "posting_date":
-                    str(first_bill.bill_date),
-
-                "due_date":
-                    str(first_bill.due_date),
-
-                "remarks":
-                    f"Original Xero Bill: {first_bill.bill_number}",
-
-                "items":
-                    purchase_items
-            }
+            print("=" * 50)
+            print("PURCHASE INVOICE PAYLOAD:")
+            print(header_payload)
+            print("=" * 50)
 
             response = requests.post(
                 f"{erp.erp_url}/api/resource/Purchase Invoice",
-                json=payload,
+                json=header_payload,
                 headers=headers
             )
 
-            if response.status_code in [200, 201]:
+            print("=" * 50)
+            print("PURCHASE INVOICE RESPONSE")
+            print(response.status_code)
+            print(response.text)
+            print("=" * 50)
+
+            if response.status_code in [
+                200,
+                201
+            ]:
 
                 db.execute(
                     text("""
@@ -216,24 +271,31 @@ def push_bills_to_erpnext(user_id, tenant_id):
                             "erpnext",
 
                         "source_invoice_number":
-                            bill_number
+                            bill.bill_number
                     }
                 )
 
                 db.commit()
 
             try:
-                response_data = response.json()
+
+                response_data = (
+                    response.json()
+                )
+
             except Exception:
-                response_data = response.text
+
+                response_data = (
+                    response.text
+                )
 
             results.append(
                 {
                     "bill_number":
-                        bill_number,
+                        bill.bill_number,
 
                     "supplier":
-                        first_bill.supplier_name,
+                        bill.supplier_name,
 
                     "status_code":
                         response.status_code,
@@ -246,4 +308,5 @@ def push_bills_to_erpnext(user_id, tenant_id):
         return results
 
     finally:
+
         db.close()
